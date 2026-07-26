@@ -7,7 +7,6 @@ import Video from './pages/Video';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import api from './api/axios';
-import './App.css';
 
 function App() {
   const { isAuthenticated, user } = useSelector((state: RootState) => state.auth);
@@ -25,26 +24,35 @@ function App() {
   };
 
   return (
-    <div className="app-container">
-      <nav style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 20px', background: '#222', color: 'white' }}>
-        <Link to="/" style={{ color: 'white', textDecoration: 'none' }}>
-          <h2>StreamForge</h2>
+    <div className="min-h-screen flex flex-col bg-zinc-950 text-zinc-100">
+      <nav className="flex justify-between items-center px-6 py-4 bg-zinc-900 border-b border-zinc-800">
+        <Link to="/" className="text-2xl font-bold bg-gradient-to-r from-rose-500 to-orange-500 bg-clip-text text-transparent hover:opacity-80 transition-opacity">
+          StreamForge
         </Link>
         <div>
           {isAuthenticated ? (
-            <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
-              <span>Welcome, {user?.email}</span>
-              <button onClick={handleLogout} style={{ cursor: 'pointer' }}>Logout</button>
+            <div className="flex items-center gap-4">
+              <span className="text-zinc-400 text-sm">Welcome, <span className="text-zinc-200">{user?.email}</span></span>
+              <button 
+                onClick={handleLogout} 
+                className="px-4 py-2 text-sm font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg transition-colors border border-zinc-700"
+              >
+                Logout
+              </button>
             </div>
           ) : (
-            <div style={{ display: 'flex', gap: '15px' }}>
-              <Link to="/login" style={{ color: 'white' }}>Login</Link>
-              <Link to="/register" style={{ color: 'white' }}>Register</Link>
+            <div className="flex items-center gap-4">
+              <Link to="/login" className="px-4 py-2 text-sm font-medium text-zinc-300 hover:text-white transition-colors">
+                Login
+              </Link>
+              <Link to="/register" className="px-4 py-2 text-sm font-medium bg-rose-600 hover:bg-rose-500 text-white rounded-lg transition-colors shadow-lg shadow-rose-500/20">
+                Register
+              </Link>
             </div>
           )}
         </div>
       </nav>
-      <main style={{ padding: '20px' }}>
+      <main className="flex-1 max-w-7xl w-full mx-auto p-6">
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/video/:id" element={<Video />} />
