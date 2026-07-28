@@ -60,46 +60,46 @@ services:
       - rabbitmq
     restart: unless-stopped
 
-  api_gateway:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.api
-    ports:
-      - "8080:8080"
-    environment:
-      - DB_HOST=db
-      - MINIO_ENDPOINT=http://minio:9000
-      - FRONTEND_URL=http://localhost:5173
-    depends_on:
-      - db
-      - minio
-    restart: unless-stopped
-
-  metadata_service:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.metadata
-    ports:
-      - "8081:8081"
-    environment:
-      - DB_HOST=db
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-    depends_on:
-      - db
-      - rabbitmq
-    restart: unless-stopped
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    ports:
-      - "5173:80"
-    environment:
-      - VITE_API_URL=http://localhost:8080/api
-    depends_on:
-      - api_gateway
-    restart: unless-stopped
+#  api_gateway:
+#    build:
+#      context: ./backend
+#      dockerfile: Dockerfile.api
+#    ports:
+#      - "8080:8080"
+#    environment:
+#      - DB_HOST=db
+#      - MINIO_ENDPOINT=http://minio:9000
+#      - FRONTEND_URL=http://localhost:5173
+#    depends_on:
+#      - db
+#      - minio
+#    restart: unless-stopped
+#
+#  metadata_service:
+#    build:
+#      context: ./backend
+#      dockerfile: Dockerfile.metadata
+#    ports:
+#      - "8081:8081"
+#    environment:
+#      - DB_HOST=db
+#      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+#    depends_on:
+#      - db
+#      - rabbitmq
+#    restart: unless-stopped
+#
+#  frontend:
+#    build:
+#      context: ./frontend
+#      dockerfile: Dockerfile
+#    ports:
+#      - "5173:80"
+#    environment:
+#      - VITE_API_URL=http://localhost:8080/api
+#    depends_on:
+#      - api_gateway
+#    restart: unless-stopped
 
 volumes:
   pgdata:
