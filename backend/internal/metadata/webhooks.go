@@ -102,7 +102,8 @@ func (h *WebhookHandler) HandleLiveWebhook(c *gin.Context) {
 
 	streamURL := fmt.Sprintf("rtmp://localhost:1935/%s", path)
 
-	if action == "publish" {
+	switch action {
+	case "publish":
 		// Stream Started
 		video := Video{
 			Title:       fmt.Sprintf("Live Stream: %s", path),
@@ -118,7 +119,7 @@ func (h *WebhookHandler) HandleLiveWebhook(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 			return
 		}
-	} else if action == "publishDone" {
+	case "publishDone":
 		// Stream Ended
 		h.DB.Model(&Video{}).Where("url = ? AND type = ?", streamURL, "Live").Update("status", "Offline")
 	}
@@ -161,9 +162,19 @@ func (h *WebhookHandler) HandleVODWebhook(c *gin.Context) {
 			objectKey = objectKeyRaw // Fallback to raw if decode fails
 		}
 
-		// Prevent infinite loops! Only process .mp4 files inside the videos/ folder.
+		// Prevent infinite loops! Only process video files inside the videos/ folder.
 		// Ignore any uploads to the hls/ folder or .ts/.m3u8 chunks created by the transcoder.
-		if !strings.HasPrefix(objectKey, "videos/") || !strings.HasSuffix(objectKey, ".mp4") {
+		if !strings.HasPrefix(objectKey, "videos/") {
+			log.Printf("Ignoring non-video folder upload event: %s", objectKey)
+			continue
+		}
+
+		lowerKey := strings.ToLower(objectKey)
+		if !strings.HasSuffix(lowerKey, ".mp4") && 
+		   !strings.HasSuffix(lowerKey, ".mkv") && 
+		   !strings.HasSuffix(lowerKey, ".mov") && 
+		   !strings.HasSuffix(lowerKey, ".avi") && 
+		   !strings.HasSuffix(lowerKey, ".webm") {
 			log.Printf("Ignoring non-video upload event: %s", objectKey)
 			continue
 		}
