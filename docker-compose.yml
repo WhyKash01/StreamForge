@@ -10,6 +10,97 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+  
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest-ffmpeg
+    ports:
+      - "1935:1935" # RTMP
+      - "8888:8888" # HLS/WebRTC HTTP server
+      - "8889:8889" # WebRTC ICE TCP (optional but good to have)
+      - "8189:8189/udp" # WebRTC ICE UDP (optional)
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml
+      - ./recordings:/recordings
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"   # AMQP protocol port
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    restart: unless-stopped
+
+  transcoder:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.transcoder
+    environment:
+      - DB_HOST=db
+      - MINIO_ENDPOINT=http://minio:9000
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      - db
+      - minio
+      - rabbitmq
+    restart: unless-stopped
+
+  api_gateway:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.api
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=db
+      - MINIO_ENDPOINT=http://minio:9000
+      - FRONTEND_URL=http://localhost:5173
+    depends_on:
+      - db
+      - minio
+    restart: unless-stopped
+
+  metadata_service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.metadata
+    ports:
+      - "8081:8081"
+    environment:
+      - DB_HOST=db
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      - db
+      - rabbitmq
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    environment:
+      - VITE_API_URL=http://localhost:8080/api
+    depends_on:
+      - api_gateway
+    restart: unless-stopped
 
 volumes:
   pgdata:
+  minio_data:

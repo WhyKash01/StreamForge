@@ -1,0 +1,36 @@
+###############################################
+# MediaMTX configuration file
+###############################################
+
+# Set the API port if you want to query streams programmatically
+api: yes
+apiAddress: :9997
+
+# WebRTC and HLS Settings
+webrtc: yes
+webrtcAddress: :8889
+hls: yes
+hlsAddress: :8888
+
+# RTMP Settings for OBS
+rtmp: yes
+rtmpAddress: :1935
+
+###############################################
+# Path Settings
+###############################################
+paths:
+  # The "all" path serves as a wildcard for all incoming streams
+  # E.g. rtmp://localhost/1935/demo
+  all:
+    # Enable recording to MP4
+    record: yes
+    recordPath: /recordings/%path_%s.mp4
+
+    # Triggered when a stream starts publishing
+    runOnAvailable: >
+      sh -c "wget -qO- 'http://host.docker.internal:8081/api/v1/webhooks/live?action=publish&path=$MTX_PATH'"
+
+    # Triggered when a stream stops publishing
+    runOnUnavailable: >
+      sh -c "wget -qO- 'http://host.docker.internal:8081/api/v1/webhooks/live?action=publishDone&path=$MTX_PATH' ; wget -qO- 'http://host.docker.internal:8080/api/webhooks/mediamtx?action=publishDone&path=$MTX_PATH'"

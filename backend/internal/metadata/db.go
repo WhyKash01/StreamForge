@@ -9,7 +9,9 @@ type Video struct {
 	gorm.Model
 	Title       string `json:"title"`
 	Description string `json:"description"`
-	URL         string `json:"url"`
+	URL         string `json:"url"` // Used for VOD URL or Live Stream URL
+	Type        string `json:"type"` // "VOD" or "Live"
+	Status      string `json:"status"` // "Uploaded", "Live", "Offline", "Processing", "Done"
 }
 
 // InitDB initializes the database connection and runs migrations

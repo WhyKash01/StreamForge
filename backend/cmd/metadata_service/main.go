@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"streamforge/internal/metadata"
 
@@ -10,8 +11,19 @@ import (
 )
 
 func main() {
+	// Environment Variables
+	dbHost := os.Getenv("DB_HOST")
+	if dbHost == "" {
+		dbHost = "localhost"
+	}
+	rabbitURL := os.Getenv("RABBITMQ_URL")
+	if rabbitURL == "" {
+		rabbitURL = "amqp://guest:guest@localhost:5672/"
+	}
+
 	// Initialize Database
-	db, err := metadata.InitDB("host=localhost user=streamforge password=password dbname=streamforge port=5432 sslmode=disable")
+	dbDSN := "host=" + dbHost + " user=streamforge password=password dbname=streamforge port=5432 sslmode=disable"
+	db, err := metadata.InitDB(dbDSN)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -20,12 +32,22 @@ func main() {
 	r := gin.Default()
 	handler := metadata.NewHandler(db)
 
+	webhookHandler, err := metadata.NewWebhookHandler(db, rabbitURL)
+	if err != nil {
+		log.Fatalf("Failed to initialize webhook handler: %v", err)
+	}
+
 	r.GET("/api/metadata/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
 	// Example routes
 	r.GET("/api/metadata/videos", handler.ListVideos)
+	r.GET("/api/metadata/videos/:id/play", handler.GetVideoPlayback)
+
+	// Webhooks
+	r.Any("/api/v1/webhooks/live", webhookHandler.HandleLiveWebhook)
+	r.POST("/api/v1/webhooks/vod", webhookHandler.HandleVODWebhook)
 
 	fmt.Println("Metadata Service running on :8081")
 	if err := r.Run(":8081"); err != nil {

@@ -1,0 +1,32 @@
+FROM golang:alpine AS builder
+
+WORKDIR /app
+
+# Install dependencies for building
+RUN apk add --no-cache gcc musl-dev
+
+# Copy go mod and sum files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the metadata_service binary
+RUN go build -o metadata_service cmd/metadata_service/main.go
+
+# Final stage
+FROM alpine:latest
+
+WORKDIR /app
+
+# Install ca-certificates and tzdata
+RUN apk add --no-cache ca-certificates tzdata
+
+# Copy the binary from builder
+COPY --from=builder /app/metadata_service .
+
+EXPOSE 8081
+
+# Run the metadata_service
+CMD ["./metadata_service"]
