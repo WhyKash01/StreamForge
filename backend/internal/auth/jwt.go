@@ -64,3 +64,19 @@ func ValidateRefreshToken(tokenString string) (uint, error) {
 	
 	return 0, errors.New("invalid refresh token")
 }
+
+func ValidateAccessToken(tokenString string) (uint, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return JwtSecretKey, nil
+	})
+	
+	if err != nil {
+		return 0, err
+	}
+	
+	if claims, ok := token.Claims.(*TokenClaims); ok && token.Valid {
+		return claims.UserID, nil
+	}
+	
+	return 0, errors.New("invalid access token")
+}

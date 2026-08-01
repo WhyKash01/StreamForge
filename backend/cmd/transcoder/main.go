@@ -4,7 +4,7 @@ import (
 	"log"
 	"os"
 
-	"streamforge/internal/metadata"
+	"streamforge/internal/models"
 	"streamforge/internal/transcoder"
 	"streamforge/internal/upload"
 
@@ -18,7 +18,7 @@ func main() {
 		dbHost = "localhost"
 	}
 	dbDSN := "host=" + dbHost + " user=streamforge password=password dbname=streamforge port=5432 sslmode=disable"
-	db, err := metadata.InitDB(dbDSN)
+	db, err := models.InitDB(dbDSN)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}

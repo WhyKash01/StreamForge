@@ -3,6 +3,13 @@ import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 interface User {
   id: number;
   email: string;
+  username: string;
+  display_name: string;
+  avatar_url?: string;
+  stream_key?: string;
+  live_title?: string;
+  live_description?: string;
+  live_thumbnail_url?: string;
 }
 
 interface AuthState {
@@ -40,6 +47,19 @@ const authSlice = createSlice({
       localStorage.setItem('user', JSON.stringify(action.payload.user));
       localStorage.setItem('accessToken', action.payload.accessToken);
     },
+    updateLiveSettings: (
+      state,
+      action: PayloadAction<{ live_title: string; live_description: string; live_thumbnail_url: string }>
+    ) => {
+      if (state.user) {
+        state.user.live_title = action.payload.live_title;
+        state.user.live_description = action.payload.live_description;
+        if (action.payload.live_thumbnail_url) {
+          state.user.live_thumbnail_url = action.payload.live_thumbnail_url;
+        }
+        localStorage.setItem('user', JSON.stringify(state.user));
+      }
+    },
     logout: (state) => {
       state.user = null;
       state.accessToken = null;
@@ -50,5 +70,5 @@ const authSlice = createSlice({
   },
 });
 
-export const { setCredentials, logout } = authSlice.actions;
+export const { setCredentials, updateLiveSettings, logout } = authSlice.actions;
 export default authSlice.reducer;

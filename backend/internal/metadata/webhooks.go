@@ -7,8 +7,11 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"streamforge/internal/models"
 
 	"github.com/gin-gonic/gin"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -100,28 +103,52 @@ func (h *WebhookHandler) HandleLiveWebhook(c *gin.Context) {
 
 	log.Printf("Received Live Webhook: Action=%s, Path=%s", action, path)
 
+	// Here, 'path' is treated as the StreamKey
+	streamKey := path
+	var user models.User
+	if err := h.DB.Where("stream_key = ?", streamKey).First(&user).Error; err != nil {
+		if action == "publish" {
+			log.Printf("Unauthorized stream attempt with key: %s", streamKey)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid Stream Key"})
+			return
+		}
+	}
+
 	streamURL := fmt.Sprintf("rtmp://localhost:1935/%s", path)
 
 	switch action {
 	case "publish":
 		// Stream Started
-		video := Video{
-			Title:       fmt.Sprintf("Live Stream: %s", path),
-			Description: "Live Stream Recording",
-			URL:         streamURL,
-			Type:        "Live",
-			Status:      "Live",
+		title := user.LiveTitle
+		if title == "" {
+			title = fmt.Sprintf("%s's Live Stream", user.DisplayName)
+		}
+		
+		video := models.Video{
+			Title:        title,
+			Description:  user.LiveDescription,
+			URL:          streamURL,
+			Type:         "Live",
+			Status:       "Live",
+			UserID:       user.ID,
+			ThumbnailURL: user.LiveThumbnailURL,
 		}
 
 		// Update or Create
-		result := h.DB.Where(Video{URL: streamURL, Type: "Live"}).Assign(Video{Status: "Live"}).FirstOrCreate(&video)
+		result := h.DB.Where(models.Video{URL: streamURL, Type: "Live"}).Assign(models.Video{
+			Status:       "Live", 
+			UserID:       user.ID,
+			Title:        video.Title,
+			Description:  video.Description,
+			ThumbnailURL: video.ThumbnailURL,
+		}).FirstOrCreate(&video)
 		if result.Error != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 			return
 		}
 	case "publishDone":
-		// Stream Ended
-		h.DB.Model(&Video{}).Where("url = ? AND type = ?", streamURL, "Live").Update("status", "Offline")
+		// Stream Ended (currently uploading to S3)
+		h.DB.Model(&models.Video{}).Where("url = ? AND type = ?", streamURL, "Live").Update("status", "Uploading")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "received"})
@@ -137,7 +164,6 @@ func (h *WebhookHandler) HandleVODWebhook(c *gin.Context) {
 
 	log.Printf("Received VOD Webhook Event")
 
-	// Parse MinIO Webhook Event (simplistic approach for S3 events)
 	records, ok := payload["Records"].([]interface{})
 	if !ok || len(records) == 0 {
 		c.JSON(http.StatusOK, gin.H{"status": "no records"})
@@ -155,53 +181,92 @@ func (h *WebhookHandler) HandleVODWebhook(c *gin.Context) {
 
 		bucketName := bucketData["name"].(string)
 		objectKeyRaw := objectData["key"].(string)
-		
-		// S3 events URL-encode the object key (e.g. videos%2F123.mp4 -> videos/123.mp4)
+
 		objectKey, err := url.QueryUnescape(objectKeyRaw)
 		if err != nil {
-			objectKey = objectKeyRaw // Fallback to raw if decode fails
+			objectKey = objectKeyRaw
 		}
 
-		// Prevent infinite loops! Only process video files inside the videos/ folder.
-		// Ignore any uploads to the hls/ folder or .ts/.m3u8 chunks created by the transcoder.
 		if !strings.HasPrefix(objectKey, "videos/") {
 			log.Printf("Ignoring non-video folder upload event: %s", objectKey)
 			continue
 		}
 
 		lowerKey := strings.ToLower(objectKey)
-		if !strings.HasSuffix(lowerKey, ".mp4") && 
-		   !strings.HasSuffix(lowerKey, ".mkv") && 
-		   !strings.HasSuffix(lowerKey, ".mov") && 
-		   !strings.HasSuffix(lowerKey, ".avi") && 
-		   !strings.HasSuffix(lowerKey, ".webm") {
+		if !strings.HasSuffix(lowerKey, ".mp4") &&
+			!strings.HasSuffix(lowerKey, ".mkv") &&
+			!strings.HasSuffix(lowerKey, ".mov") &&
+			!strings.HasSuffix(lowerKey, ".avi") &&
+			!strings.HasSuffix(lowerKey, ".webm") {
 			log.Printf("Ignoring non-video upload event: %s", objectKey)
 			continue
 		}
 
 		vodURL := fmt.Sprintf("s3://%s/%s", bucketName, objectKey)
 
-		video := Video{
-			Title:       fmt.Sprintf("Uploaded VOD: %s", objectKey),
-			Description: "VOD Upload",
-			URL:         vodURL,
-			Type:        "VOD",
-			Status:      "Uploaded",
-		}
+		// Extract user ID and timestamp prefix from objectKey (videos/{userID}/{timestamp}_{filename})
+		parts := strings.Split(objectKey, "/")
+		if len(parts) >= 3 {
+			// Find the video by URL since it was pre-created in /api/upload/init
+			var video models.Video
+			if err := h.DB.Where("url = ?", vodURL).First(&video).Error; err != nil {
+				// If not found, it wasn't initialized. Create a fallback or morph a Live stream.
+				var userID uint
+				if id, err := strconv.ParseUint(parts[1], 10, 32); err == nil {
+					userID = uint(id)
+				}
+				
+				isLiveRecording := strings.Contains(parts[len(parts)-1], "_live_")
+				morphedLive := false
 
-		if err := h.DB.Create(&video).Error; err != nil {
-			log.Printf("DB error creating VOD: %v", err)
-			continue
-		}
+				if isLiveRecording {
+					// Find the original Live video record that is currently "Uploading"
+					var liveVideo models.Video
+					if err := h.DB.Where("user_id = ? AND type = ?", userID, "Live").Order("created_at desc").First(&liveVideo).Error; err == nil {
+						// Morph this existing Live record into the final VOD!
+						title := liveVideo.Title
+						if !strings.HasSuffix(title, " (VOD)") {
+							title += " (VOD)"
+						}
+						
+						h.DB.Model(&liveVideo).Updates(map[string]interface{}{
+							"type":   "VOD",
+							"url":    vodURL,
+							"status": "Uploaded",
+							"title":  title,
+						})
+						
+						video = liveVideo
+						morphedLive = true
+					}
+				}
 
-		// Push to RabbitMQ
-		err = h.pushToQueue(TranscodeJob{
-			VideoID: video.ID,
-			URL:     vodURL,
-			Type:    "VOD",
-		})
-		if err != nil {
-			log.Printf("Failed to push to RabbitMQ: %v", err)
+				if !morphedLive {
+					// Standard fallback creation if it wasn't a live stream (or live record was lost)
+					video = models.Video{
+						Title:        fmt.Sprintf("Uploaded VOD: %s", parts[len(parts)-1]),
+						Description:  "VOD Upload",
+						URL:          vodURL,
+						Type:         "VOD",
+						Status:       "Uploaded",
+						UserID:       userID,
+					}
+					h.DB.Create(&video)
+				}
+			} else {
+				// Found initialized video, update status
+				h.DB.Model(&video).Update("status", "Uploaded")
+			}
+
+			// Push to RabbitMQ for transcoding
+			err = h.pushToQueue(TranscodeJob{
+				VideoID: video.ID,
+				URL:     vodURL,
+				Type:    "VOD",
+			})
+			if err != nil {
+				log.Printf("Failed to push to RabbitMQ: %v", err)
+			}
 		}
 	}
 

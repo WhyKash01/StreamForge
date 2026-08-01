@@ -2,7 +2,13 @@ import { useParams, Link } from 'react-router-dom';
 import { useEffect, useState, useRef } from 'react';
 import Hls from 'hls.js';
 import api from '../api/axios';
-import { Settings, Check } from 'lucide-react';
+import { Settings, Check, User as UserIcon } from 'lucide-react';
+
+interface ChannelInfo {
+  username: string;
+  display_name: string;
+  avatar_url: string;
+}
 
 export default function Video() {
   const { id } = useParams();
@@ -11,12 +17,31 @@ export default function Video() {
   
   const [playbackUrl, setPlaybackUrl] = useState('');
   const [title, setTitle] = useState('');
+  const [channel, setChannel] = useState<ChannelInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   
   const [levels, setLevels] = useState<{ height: number; bitrate: number }[]>([]);
   const [currentLevel, setCurrentLevel] = useState<number>(-1); // -1 is Auto
   const [showSettings, setShowSettings] = useState(false);
+  const [videoStatus, setVideoStatus] = useState<string>('');
+  const [isPolling, setIsPolling] = useState(false);
+
+  // Poll for video status after stream ends
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>;
+    if (isPolling) {
+      interval = setInterval(async () => {
+        try {
+           const res = await api.get(`/metadata/videos/${id}/status`);
+           setVideoStatus(res.data.status);
+        } catch (e) {
+           console.error('Failed to poll video status', e);
+        }
+      }, 3000);
+    }
+    return () => clearInterval(interval);
+  }, [isPolling, id]);
 
   useEffect(() => {
     const fetchPlayback = async () => {
@@ -24,6 +49,7 @@ export default function Video() {
         const res = await api.get(`/metadata/videos/${id}/play`);
         setPlaybackUrl(res.data.playback_url);
         setTitle(res.data.title);
+        setChannel(res.data.channel || null);
       } catch (err: any) {
         console.error('Failed to fetch playback info', err);
         setError(err.response?.data?.error || 'Failed to load video');
@@ -49,16 +75,21 @@ export default function Video() {
       hls.loadSource(playbackUrl);
       hls.attachMedia(video);
 
-      hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+      hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
         // Sort levels by height descending so 1080p is at the top of the list
         const sortedLevels = [...data.levels].sort((a, b) => b.height - a.height);
         setLevels(sortedLevels.map(l => ({ height: l.height, bitrate: l.bitrate })));
       });
 
-      hls.on(Hls.Events.ERROR, (event, data) => {
+      hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
            console.error("HLS Fatal Error:", data);
-           setError('HLS Error: ' + data.type);
+           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+             setError('Stream has ended.');
+             setIsPolling(true);
+           } else {
+             setError('Playback Error: ' + data.type);
+           }
         }
       });
 
@@ -100,9 +131,28 @@ export default function Video() {
           {loading ? (
             <div className="text-zinc-500 animate-pulse font-medium">Loading Player...</div>
           ) : error ? (
-            <div className="text-rose-500 flex flex-col items-center gap-2">
-              <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
-              <span>{error}</span>
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950 z-10 p-6 text-center">
+              {videoStatus === 'Uploading' || videoStatus === 'Processing' ? (
+                <div className="flex flex-col items-center">
+                  <div className="w-12 h-12 border-4 border-rose-500/30 border-t-rose-500 rounded-full animate-spin mb-6"></div>
+                  <h3 className="text-xl font-bold text-rose-500 mb-2">Stream has ended</h3>
+                  <p className="text-zinc-400 text-sm mb-4">The recording is currently {videoStatus.toLowerCase()}...</p>
+                </div>
+              ) : videoStatus === 'Done' ? (
+                <div className="flex flex-col items-center">
+                  <svg className="w-12 h-12 text-emerald-500 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  <h3 className="text-xl font-bold text-emerald-500 mb-2">Recording is ready!</h3>
+                  <p className="text-zinc-400 text-sm mb-6">You can now watch the high-quality VOD.</p>
+                  <button onClick={() => window.location.reload()} className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm rounded-lg transition-colors shadow-lg shadow-emerald-500/20">
+                    Watch VOD
+                  </button>
+                </div>
+              ) : (
+                <div className="text-rose-500 flex flex-col items-center gap-2">
+                  <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                  <span>{error}</span>
+                </div>
+              )}
             </div>
           ) : (
             <>
@@ -111,7 +161,6 @@ export default function Video() {
                 className="w-full h-full object-contain"
                 controls
                 autoPlay
-                muted
               />
 
               {/* Custom Quality Selector Overlay */}
@@ -160,11 +209,32 @@ export default function Video() {
           <h2 className="text-2xl font-bold text-white mb-2">
             {loading ? 'Loading...' : title}
           </h2>
-          <div className="flex items-center gap-4 text-sm text-zinc-400 mb-6">
+          <div className="flex items-center gap-4 text-sm text-zinc-400 mb-6 pb-6 border-b border-zinc-800">
             <span>Now Streaming</span>
             <span>•</span>
             <span className="text-rose-500 font-medium">HLS Video Quality</span>
           </div>
+          
+          {channel && (
+            <div className="flex items-center gap-4 mb-6">
+              <Link to={`/channel/${channel.username}`}>
+                {channel.avatar_url ? (
+                  <img src={channel.avatar_url} alt={channel.display_name || channel.username} className="w-12 h-12 rounded-full object-cover border border-zinc-700 hover:border-zinc-500 transition-colors" />
+                ) : (
+                  <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center border border-zinc-700 text-zinc-400 hover:border-zinc-500 transition-colors">
+                    <UserIcon className="w-6 h-6" />
+                  </div>
+                )}
+              </Link>
+              <div>
+                <Link to={`/channel/${channel.username}`} className="text-lg font-bold text-zinc-100 hover:text-white transition-colors">
+                  {channel.display_name || channel.username}
+                </Link>
+                <div className="text-sm text-zinc-500">@{channel.username}</div>
+              </div>
+            </div>
+          )}
+
           <div className="bg-zinc-800/50 p-4 rounded-lg">
             <p className="text-zinc-300">
               Powered by StreamForge's custom Go Transcoder and MinIO Edge Delivery. The player dynamically adjusts resolution based on your available bandwidth.

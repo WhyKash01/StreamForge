@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"streamforge/internal/metadata"
+	"streamforge/internal/models"
 	"streamforge/internal/upload"
 )
 
@@ -70,7 +71,7 @@ func (w *Worker) Start() error {
 		err := w.processJob(job)
 		if err != nil {
 			log.Printf("Failed to process job for Video %d: %v\n", job.VideoID, err)
-			w.DB.Model(&metadata.Video{}).Where("id = ?", job.VideoID).Update("status", "Failed")
+			w.DB.Model(&models.Video{}).Where("id = ?", job.VideoID).Update("status", "Failed")
 			d.Nack(false, false) // Drop the message instead of infinitely requeuing
 		} else {
 			log.Printf("Successfully processed job for Video %d\n", job.VideoID)
@@ -82,7 +83,7 @@ func (w *Worker) Start() error {
 
 func (w *Worker) processJob(job metadata.TranscodeJob) error {
 	// 1. Update status
-	w.DB.Model(&metadata.Video{}).Where("id = ?", job.VideoID).Update("status", "Processing")
+	w.DB.Model(&models.Video{}).Where("id = ?", job.VideoID).Update("status", "Processing")
 
 	// 2. Extract object key from URL (e.g. s3://streamforge/videos/123.mp4 or rtmp://...)
 	var objectKey string
@@ -98,6 +99,7 @@ func (w *Worker) processJob(job metadata.TranscodeJob) error {
 	}
 
 	tempDir := fmt.Sprintf("/tmp/transcode/%d", job.VideoID)
+	os.RemoveAll(tempDir) // Ensure clean slate in case of previous crash or DB reset
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return err
 	}
@@ -163,7 +165,7 @@ func (w *Worker) processJob(job metadata.TranscodeJob) error {
 
 	// 6. Update DB
 	masterURL := fmt.Sprintf("s3://%s/%s/master.m3u8", w.S3.BucketName, prefix)
-	w.DB.Model(&metadata.Video{}).Where("id = ?", job.VideoID).Updates(map[string]interface{}{
+	w.DB.Model(&models.Video{}).Where("id = ?", job.VideoID).Updates(map[string]interface{}{
 		"status": "Done",
 		"url":    masterURL,
 	})

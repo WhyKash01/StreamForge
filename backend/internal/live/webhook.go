@@ -10,16 +10,20 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"streamforge/internal/models"
 	"streamforge/internal/upload"
 )
 
 type WebhookHandler struct {
 	s3Service *upload.S3Service
+	db        *gorm.DB
 }
 
-func NewWebhookHandler(s3Service *upload.S3Service) *WebhookHandler {
+func NewWebhookHandler(s3Service *upload.S3Service, db *gorm.DB) *WebhookHandler {
 	return &WebhookHandler{
 		s3Service: s3Service,
+		db:        db,
 	}
 }
 
@@ -71,8 +75,14 @@ func (h *WebhookHandler) processRecording(streamPath string) {
 			// Look for files like demo_1712345678.mp4
 			if !f.IsDir() && strings.HasPrefix(f.Name(), streamPath+"_") && strings.HasSuffix(f.Name(), ".mp4") {
 				found = true
+				var user models.User
+				userID := uint(0)
+				if err := h.db.Where("stream_key = ?", streamPath).First(&user).Error; err == nil {
+					userID = user.ID
+				}
+				
 				hostRecordPath := recordingsDir + "/" + f.Name()
-				objectKey := fmt.Sprintf("videos/%d_live_%s", time.Now().Unix(), f.Name())
+				objectKey := fmt.Sprintf("videos/%d/%d_live_%s", userID, time.Now().Unix(), f.Name())
 				
 				log.Printf("Uploading recording %s to MinIO as %s...", hostRecordPath, objectKey)
 

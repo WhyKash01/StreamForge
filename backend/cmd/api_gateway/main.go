@@ -8,6 +8,8 @@ import (
 	"streamforge/internal/auth"
 	"streamforge/internal/live"
 	"streamforge/internal/metadata"
+	"streamforge/internal/models"
+	"streamforge/internal/middleware"
 	"streamforge/internal/upload"
 
 	"github.com/gin-gonic/gin"
@@ -38,9 +40,9 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	// Run Auth Migrations
-	if err := auth.Migrate(db); err != nil {
-		log.Fatalf("Failed to migrate auth models: %v", err)
+	// Run Migrations
+	if err := db.AutoMigrate(&models.User{}, &models.Video{}); err != nil {
+		log.Fatalf("Failed to migrate models: %v", err)
 	}
 
 	r := gin.Default()
@@ -52,6 +54,9 @@ func main() {
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 	}))
+
+	// Middlewares
+	authMiddleware := middleware.RequireAuth(db)
 
 	// Initialize Handlers
 	authHandler := auth.NewHandler(db)
@@ -73,22 +78,30 @@ func main() {
 		"minioadmin",
 		"streamforge",
 	)
-	uploadHandler := upload.NewHandler(s3Service)
+	uploadHandler := upload.NewHandler(s3Service, db)
 
 	// Upload Routes
 	uploadGroup := r.Group("/api/upload")
 	{
-		uploadGroup.GET("/presigned", uploadHandler.HandlePresignedURL)
+		uploadGroup.POST("/init", authMiddleware, uploadHandler.HandleInitUpload)
+		uploadGroup.GET("/presigned", authMiddleware, uploadHandler.HandlePresignedURL)
 		uploadGroup.GET("/videos", uploadHandler.HandleListVideos)
 	}
+
+	// Live Routes
+	r.POST("/api/live/settings", authMiddleware, uploadHandler.HandleLiveSettings)
+	r.GET("/api/live/status", authMiddleware, uploadHandler.GetLiveStatus)
 
 	// Metadata Routes
 	metadataHandler := metadata.NewHandler(db)
 	r.GET("/api/metadata/videos", metadataHandler.ListVideos)
 	r.GET("/api/metadata/videos/:id/play", metadataHandler.GetVideoPlayback)
+	r.GET("/api/metadata/videos/:id/status", metadataHandler.GetVideoStatus)
+	r.GET("/api/channel/:username", metadataHandler.GetChannel)
+	r.GET("/api/channel/id/:user_id/videos", metadataHandler.GetUserVideos)
 
 	// Webhooks
-	webhookHandler := live.NewWebhookHandler(s3Service)
+	webhookHandler := live.NewWebhookHandler(s3Service, db)
 	r.Any("/api/webhooks/mediamtx", webhookHandler.HandleMediaMTXWebhook)
 
 	// API Gateway routes

@@ -2,6 +2,9 @@ package metadata
 
 import (
 	"net/http"
+	"strconv"
+
+	"streamforge/internal/models"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -16,19 +19,57 @@ func NewHandler(db *gorm.DB) *Handler {
 }
 
 func (h *Handler) ListVideos(c *gin.Context) {
-	var videos []Video
-	if err := h.DB.Find(&videos).Error; err != nil {
+	var videos []models.Video
+	if err := h.DB.Preload("User").Find(&videos).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, videos)
 }
 
+func (h *Handler) GetChannel(c *gin.Context) {
+	username := c.Param("username")
+	var user models.User
+	
+	if err := h.DB.Preload("Videos").Where("username = ?", username).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Channel not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"channel": gin.H{
+			"id":           user.ID,
+			"username":     user.Username,
+			"display_name": user.DisplayName,
+			"avatar_url":   user.AvatarURL,
+			"bio":          user.Bio,
+			"videos":       user.Videos,
+		},
+	})
+}
+
+func (h *Handler) GetUserVideos(c *gin.Context) {
+	userIDStr := c.Param("user_id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	var videos []models.Video
+	if err := h.DB.Where("user_id = ?", userID).Find(&videos).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, videos)
+}
+
 func (h *Handler) GetVideoPlayback(c *gin.Context) {
 	id := c.Param("id")
-	var video Video
-	
-	if err := h.DB.First(&video, id).Error; err != nil {
+	var video models.Video
+
+	if err := h.DB.Preload("User").First(&video, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Video not found"})
 		return
 	}
@@ -54,5 +95,24 @@ func (h *Handler) GetVideoPlayback(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"playback_url": cdnURL,
 		"title":        video.Title,
+		"channel": gin.H{
+			"username":     video.User.Username,
+			"display_name": video.User.DisplayName,
+			"avatar_url":   video.User.AvatarURL,
+		},
+	})
+}
+
+func (h *Handler) GetVideoStatus(c *gin.Context) {
+	id := c.Param("id")
+	var video models.Video
+
+	if err := h.DB.Select("status").First(&video, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Video not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": video.Status,
 	})
 }

@@ -5,6 +5,8 @@ import api from '../api/axios';
 export default function Register() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [username, setUsername] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
@@ -17,7 +19,12 @@ export default function Register() {
     setLoading(true);
     
     try {
-      await api.post('/auth/register', { email, password });
+      await api.post('/auth/register', { 
+        email, 
+        password,
+        username,
+        display_name: displayName
+      });
       setSuccess('Registration successful! Redirecting to login...');
       setTimeout(() => navigate('/login'), 2000);
     } catch (err: any) {
@@ -43,6 +50,31 @@ export default function Register() {
       )}
       
       <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+        <div>
+          <label className="block text-sm font-medium text-zinc-400 mb-1.5">Username <span className="text-zinc-600">(Channel URL)</span></label>
+          <input 
+            type="text" 
+            placeholder="e.g. john_doe" 
+            value={username} 
+            onChange={(e) => setUsername(e.target.value)} 
+            required
+            pattern="[a-zA-Z0-9_]+"
+            title="Only alphanumeric characters and underscores are allowed"
+            minLength={3}
+            maxLength={20}
+            className="w-full px-4 py-3 bg-zinc-950 border border-zinc-800 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-transparent transition-shadow"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-zinc-400 mb-1.5">Display Name <span className="text-zinc-600">(Optional)</span></label>
+          <input 
+            type="text" 
+            placeholder="e.g. John Doe" 
+            value={displayName} 
+            onChange={(e) => setDisplayName(e.target.value)} 
+            className="w-full px-4 py-3 bg-zinc-950 border border-zinc-800 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-transparent transition-shadow"
+          />
+        </div>
         <div>
           <label className="block text-sm font-medium text-zinc-400 mb-1.5">Email Address</label>
           <input 

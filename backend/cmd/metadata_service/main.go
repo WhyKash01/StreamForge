@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"streamforge/internal/metadata"
+	"streamforge/internal/models"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,7 +24,7 @@ func main() {
 
 	// Initialize Database
 	dbDSN := "host=" + dbHost + " user=streamforge password=password dbname=streamforge port=5432 sslmode=disable"
-	db, err := metadata.InitDB(dbDSN)
+	db, err := models.InitDB(dbDSN)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -44,6 +45,8 @@ func main() {
 	// Example routes
 	r.GET("/api/metadata/videos", handler.ListVideos)
 	r.GET("/api/metadata/videos/:id/play", handler.GetVideoPlayback)
+	r.GET("/api/channel/:username", handler.GetChannel)
+	r.GET("/api/users/:user_id/videos", handler.GetUserVideos)
 
 	// Webhooks
 	r.Any("/api/v1/webhooks/live", webhookHandler.HandleLiveWebhook)
