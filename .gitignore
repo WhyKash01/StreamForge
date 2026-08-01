@@ -4,8 +4,11 @@ dist/
 dist-ssr/
 *.local
 
-# Go
-backend/streamforge.exe
+# Compiled Binaries
+*.exe
+backend/api_gateway
+backend/metadata_service
+backend/transcoder
 backend/streamforge
 
 # Environment
