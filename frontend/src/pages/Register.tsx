@@ -28,7 +28,11 @@ export default function Register() {
       setSuccess('Registration successful! Redirecting to login...');
       setTimeout(() => navigate('/login'), 2000);
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to register');
+      if (err.response?.status === 429) {
+        setError('Rate limit exceeded. Please wait 60 seconds before trying again.');
+      } else {
+        setError(err.response?.data?.error || 'Failed to register');
+      }
     } finally {
       setLoading(false);
     }

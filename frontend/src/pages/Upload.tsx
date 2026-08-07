@@ -27,6 +27,7 @@ export default function Upload() {
         try {
           const res = await api.get(`/metadata/videos/${finalVideoId}/status`);
           const videoStatus = res.data.status;
+          const progressMsg = res.data.progress;
           
           if (videoStatus === 'Done') {
             setStatus('success');
@@ -36,6 +37,8 @@ export default function Upload() {
             setStatus('error');
             setMessage('Video processing failed. Please try again.');
             clearInterval(intervalId);
+          } else if (videoStatus === 'Processing' && progressMsg) {
+            setMessage(progressMsg);
           }
         } catch (err) {
           console.error("Failed to fetch video status during polling", err);

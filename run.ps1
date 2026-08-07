@@ -24,4 +24,5 @@ Write-Host "All services have been launched in separate windows!" -ForegroundCol
 Write-Host "Frontend: http://localhost:5173" -ForegroundColor Magenta
 Write-Host "API Gateway: http://localhost:8080" -ForegroundColor Green
 Write-Host "Metadata Service: http://localhost:8081" -ForegroundColor Yellow
+Write-Host "Grafana Dashboard: http://localhost:3000 (admin/admin)" -ForegroundColor DarkYellow
 Write-Host "=======================================" -ForegroundColor Cyan

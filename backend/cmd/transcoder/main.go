@@ -1,49 +1,64 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"os"
 
+	"streamforge/internal/logger"
 	"streamforge/internal/models"
 	"streamforge/internal/transcoder"
 	"streamforge/internal/upload"
 
+	"github.com/joho/godotenv"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.uber.org/zap"
 )
 
 func main() {
+	godotenv.Load("../.env")
+	logger.InitLogger()
+	defer logger.Sync()
+
+	logger.Log.Info("Starting Transcoder Service...")
+
+	// Environment Variables
+	dbHost := getEnvOrDefault("DB_HOST", "localhost")
+	dbUser := getEnvOrDefault("DB_USER", "streamforge")
+	dbPass := getEnvOrDefault("DB_PASSWORD", "password")
+	dbName := getEnvOrDefault("DB_NAME", "streamforge")
+	dbPort := getEnvOrDefault("DB_PORT", "5432")
+	dbSSL := getEnvOrDefault("DB_SSLMODE", "disable")
+
+	rabbitURL := getEnvOrDefault("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+
+	minioEndpoint := getEnvOrDefault("MINIO_ENDPOINT", "http://localhost:9000")
+	minioRegion := getEnvOrDefault("MINIO_REGION", "us-east-1")
+	minioAccessKey := getEnvOrDefault("MINIO_ACCESS_KEY", "minioadmin")
+	minioSecretKey := getEnvOrDefault("MINIO_SECRET_KEY", "minioadmin")
+	minioBucket := getEnvOrDefault("MINIO_BUCKET", "streamforge")
+
 	// Initialize Database
-	dbHost := os.Getenv("DB_HOST")
-	if dbHost == "" {
-		dbHost = "localhost"
-	}
-	dbDSN := "host=" + dbHost + " user=streamforge password=password dbname=streamforge port=5432 sslmode=disable"
+	dbDSN := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+		dbHost, dbUser, dbPass, dbName, dbPort, dbSSL)
 	db, err := models.InitDB(dbDSN)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		logger.Log.Fatal("Failed to connect to database", zap.Error(err))
 	}
 
 	// Initialize S3
-	minioEndpoint := os.Getenv("MINIO_ENDPOINT")
-	if minioEndpoint == "" {
-		minioEndpoint = "http://localhost:9000"
-	}
 	s3Service := upload.NewS3Service(
 		minioEndpoint,
-		"us-east-1",
-		"minioadmin",
-		"minioadmin",
-		"streamforge",
+		minioRegion,
+		minioAccessKey,
+		minioSecretKey,
+		minioBucket,
 	)
 
 	// Initialize RabbitMQ
-	rabbitURL := os.Getenv("RABBITMQ_URL")
-	if rabbitURL == "" {
-		rabbitURL = "amqp://guest:guest@localhost:5672/"
-	}
+
 	conn, err := amqp.Dial(rabbitURL)
 	if err != nil {
-		log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+		logger.Log.Fatal("Failed to connect to RabbitMQ", zap.Error(err))
 	}
 	defer conn.Close()
 
@@ -53,8 +68,15 @@ func main() {
 		AMQP: conn,
 	}
 
-	log.Println("Initializing Transcoder Worker...")
+	logger.Log.Info("Initializing Transcoder Worker...")
 	if err := worker.Start(); err != nil {
-		log.Fatalf("Worker failed: %v", err)
+		logger.Log.Fatal("Worker failed", zap.Error(err))
 	}
+}
+
+func getEnvOrDefault(key, fallback string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return fallback
 }

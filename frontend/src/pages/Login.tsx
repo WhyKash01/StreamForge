@@ -25,7 +25,11 @@ export default function Login() {
       }));
       navigate('/');
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to login');
+      if (err.response?.status === 429) {
+        setError('Rate limit exceeded. Please wait 60 seconds before trying again.');
+      } else {
+        setError(err.response?.data?.error || 'Failed to login');
+      }
     } finally {
       setLoading(false);
     }

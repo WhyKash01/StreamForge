@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -59,47 +60,71 @@ func (h *WebhookHandler) processRecording(streamPath string) {
 	recordingsDir := "../recordings"
 	maxRetries := 5
 	
+	fLog, _ := os.OpenFile("process_log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	defer fLog.Close()
+	fLog.WriteString(fmt.Sprintf("processRecording started for %s\n", streamPath))
+
+	
+	segments := strings.Split(streamPath, "/")
+	streamKey := segments[len(segments)-1]
+	
 	for i := 0; i < maxRetries; i++ {
 		// Wait a moment to ensure MediaMTX has fully flushed the file to disk
 		time.Sleep(3 * time.Second)
 
-		files, err := os.ReadDir(recordingsDir)
-		if err != nil {
-			log.Printf("Error reading recordings directory: %v", err)
-			return
-		}
-
 		success := false
 		found := false
-		for _, f := range files {
-			// Look for files like demo_1712345678.mp4
-			if !f.IsDir() && strings.HasPrefix(f.Name(), streamPath+"_") && strings.HasSuffix(f.Name(), ".mp4") {
-				found = true
-				var user models.User
-				userID := uint(0)
-				if err := h.db.Where("stream_key = ?", streamPath).First(&user).Error; err == nil {
-					userID = user.ID
-				}
-				
-				hostRecordPath := recordingsDir + "/" + f.Name()
-				objectKey := fmt.Sprintf("videos/%d/%d_live_%s", userID, time.Now().Unix(), f.Name())
-				
-				log.Printf("Uploading recording %s to MinIO as %s...", hostRecordPath, objectKey)
 
-				err := h.s3Service.UploadFile(context.Background(), objectKey, hostRecordPath)
-				if err != nil {
-					log.Printf("Failed to upload live stream recording: %v", err)
-					continue
-				}
-
-				success = true
-				log.Printf("Successfully uploaded live stream recording to MinIO.")
-
-				// Cleanup the local file
-				if err := os.Remove(hostRecordPath); err != nil {
-					log.Printf("Failed to clean up local recording file: %v", err)
+		var newestFile string
+		var newestModTime int64
+		
+		_ = filepath.WalkDir(recordingsDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil // skip errors
+			}
+			fLog.WriteString(fmt.Sprintf("Checking %s, isDir=%v\n", path, d.IsDir()))
+			if !d.IsDir() && strings.Contains(path, streamKey) && strings.HasSuffix(d.Name(), ".mp4") {
+				info, err := d.Info()
+				if err == nil {
+					if info.ModTime().UnixNano() > newestModTime {
+						newestModTime = info.ModTime().UnixNano()
+						newestFile = path
+					}
 				}
 			}
+			return nil
+		})
+		
+		if newestFile != "" {
+			fLog.WriteString(fmt.Sprintf("MATCHED NEWEST FILE %s!\n", newestFile))
+			found = true
+			var user models.User
+			userID := uint(0)
+			if err := h.db.Where("stream_key = ?", streamKey).First(&user).Error; err == nil {
+				userID = user.ID
+			}
+			
+			objectKey := fmt.Sprintf("videos/%d/%d_syslive_%s", userID, time.Now().Unix(), filepath.Base(newestFile))
+			
+			fLog.WriteString(fmt.Sprintf("Uploading to %s...\n", objectKey))
+			err := h.s3Service.UploadFile(context.Background(), objectKey, newestFile)
+			if err != nil {
+				fLog.WriteString(fmt.Sprintf("Upload failed: %v\n", err))
+				log.Printf("Failed to upload live stream recording: %v", err)
+				continue // retry loop
+			}
+
+			success = true
+			fLog.WriteString("Upload successful!\n")
+			log.Printf("Successfully uploaded live stream recording to MinIO.")
+
+			// Cleanup all matching files for this streamKey to prevent buildup
+			filepath.WalkDir(recordingsDir, func(p string, d os.DirEntry, err error) error {
+				if err == nil && !d.IsDir() && strings.Contains(p, streamKey) && strings.HasSuffix(d.Name(), ".mp4") {
+					os.Remove(p)
+				}
+				return nil
+			})
 		}
 
 		if success {
@@ -113,4 +138,44 @@ func (h *WebhookHandler) processRecording(streamPath string) {
 		}
 	}
 	log.Printf("Failed to find recording for stream %s after %d retries.", streamPath, maxRetries)
+}
+
+func (h *WebhookHandler) HandleMediaMTXAuth(c *gin.Context) {
+	var payload struct {
+		Action   string `json:"action"`
+		Path     string `json:"path"`
+		User     string `json:"user"`
+		Password string `json:"password"`
+	}
+
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	// Allow all read requests (viewers)
+	if payload.Action == "read" {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
+	}
+
+	// For publish requests, authenticate using the stream key from the path
+	if payload.Action == "publish" {
+		segments := strings.Split(payload.Path, "/")
+		streamKey := segments[len(segments)-1]
+		
+		var user models.User
+		if err := h.db.Where("stream_key = ?", streamKey).First(&user).Error; err != nil {
+			log.Printf("Rejected publish for path %s: Invalid stream key", payload.Path)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
+
+		log.Printf("Accepted publish for user %s with stream key %s", user.Username, payload.Path)
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
+	}
+
+	// Default allow other actions
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }

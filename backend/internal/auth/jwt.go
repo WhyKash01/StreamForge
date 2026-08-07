@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -11,6 +12,15 @@ var (
 	JwtSecretKey     = []byte("super-secret-key-change-in-prod")
 	RefreshSecretKey = []byte("super-refresh-secret-change-in-prod")
 )
+
+func init() {
+	if sec := os.Getenv("JWT_SECRET"); sec != "" {
+		JwtSecretKey = []byte(sec)
+	}
+	if rSec := os.Getenv("JWT_REFRESH_SECRET"); rSec != "" {
+		RefreshSecretKey = []byte(rSec)
+	}
+}
 
 type TokenClaims struct {
 	UserID uint `json:"user_id"`

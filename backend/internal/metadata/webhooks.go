@@ -36,13 +36,26 @@ func NewWebhookHandler(db *gorm.DB, rabbitURL string) (*WebhookHandler, error) {
 		return nil, fmt.Errorf("failed to open a channel: %w", err)
 	}
 
+	// Setup DLX
+	if err := ch.ExchangeDeclare("transcode_dlx", "direct", true, false, false, false, nil); err != nil {
+		return nil, fmt.Errorf("failed to declare dlx: %w", err)
+	}
+	dlq, err := ch.QueueDeclare("transcode_dlq", true, false, false, false, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to declare dlq: %w", err)
+	}
+	if err := ch.QueueBind(dlq.Name, "", "transcode_dlx", false, nil); err != nil {
+		return nil, fmt.Errorf("failed to bind dlq: %w", err)
+	}
+
+	args := amqp.Table{"x-dead-letter-exchange": "transcode_dlx"}
 	q, err := ch.QueueDeclare(
 		"transcode_queue", // name
 		true,              // durable
 		false,             // delete when unused
 		false,             // exclusive
 		false,             // no-wait
-		nil,               // arguments
+		args,              // arguments
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to declare a queue: %w", err)
@@ -103,8 +116,10 @@ func (h *WebhookHandler) HandleLiveWebhook(c *gin.Context) {
 
 	log.Printf("Received Live Webhook: Action=%s, Path=%s", action, path)
 
-	// Here, 'path' is treated as the StreamKey
-	streamKey := path
+	// Extract stream key from path (e.g. "live/xyz" -> "xyz")
+	segments := strings.Split(path, "/")
+	streamKey := segments[len(segments)-1]
+
 	var user models.User
 	if err := h.DB.Where("stream_key = ?", streamKey).First(&user).Error; err != nil {
 		if action == "publish" {
@@ -216,7 +231,7 @@ func (h *WebhookHandler) HandleVODWebhook(c *gin.Context) {
 					userID = uint(id)
 				}
 				
-				isLiveRecording := strings.Contains(parts[len(parts)-1], "_live_")
+				isLiveRecording := strings.Contains(parts[len(parts)-1], "_syslive_")
 				morphedLive := false
 
 				if isLiveRecording {

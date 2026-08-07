@@ -2,41 +2,84 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 
 	"streamforge/internal/metadata"
 	"streamforge/internal/models"
+	"streamforge/internal/upload"
 
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+
+	"streamforge/internal/logger"
+	"streamforge/internal/middleware"
 )
 
 func main() {
+	// Load environment variables
+	_ = godotenv.Load("../.env")
+	logger.InitLogger()
+	defer logger.Sync()
+
+	logger.Log.Info("Starting Metadata Service...")
+
 	// Environment Variables
-	dbHost := os.Getenv("DB_HOST")
-	if dbHost == "" {
-		dbHost = "localhost"
-	}
-	rabbitURL := os.Getenv("RABBITMQ_URL")
-	if rabbitURL == "" {
-		rabbitURL = "amqp://guest:guest@localhost:5672/"
-	}
+	dbHost := getEnvOrDefault("DB_HOST", "localhost")
+	dbUser := getEnvOrDefault("DB_USER", "streamforge")
+	dbPass := getEnvOrDefault("DB_PASSWORD", "password")
+	dbName := getEnvOrDefault("DB_NAME", "streamforge")
+	dbPort := getEnvOrDefault("DB_PORT", "5432")
+	dbSSL := getEnvOrDefault("DB_SSLMODE", "disable")
+
+	rabbitURL := getEnvOrDefault("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+
+	minioEndpoint := getEnvOrDefault("MINIO_ENDPOINT", "http://localhost:9000")
+	minioRegion := getEnvOrDefault("MINIO_REGION", "us-east-1")
+	minioAccessKey := getEnvOrDefault("MINIO_ACCESS_KEY", "minioadmin")
+	minioSecretKey := getEnvOrDefault("MINIO_SECRET_KEY", "minioadmin")
+	minioBucket := getEnvOrDefault("MINIO_BUCKET", "streamforge")
 
 	// Initialize Database
-	dbDSN := "host=" + dbHost + " user=streamforge password=password dbname=streamforge port=5432 sslmode=disable"
+	dbDSN := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+		dbHost, dbUser, dbPass, dbName, dbPort, dbSSL)
 	db, err := models.InitDB(dbDSN)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		logger.Log.Fatal("Failed to connect to database", zap.Error(err))
 	}
-	fmt.Println("Connected to PostgreSQL successfully")
+	logger.Log.Info("Connected to PostgreSQL successfully")
+
+	// Connect to Redis
+	redisURL := getEnvOrDefault("REDIS_URL", "redis://localhost:6379/0")
+	opt, err := redis.ParseURL(redisURL)
+	var rdb *redis.Client
+	if err == nil {
+		rdb = redis.NewClient(opt)
+	} else {
+		logger.Log.Warn("Failed to parse REDIS_URL, running without cache", zap.Error(err))
+	}
 
 	r := gin.Default()
-	handler := metadata.NewHandler(db)
+	r.Use(middleware.PrometheusMetrics())
+
+	s3Service := upload.NewS3Service(
+		minioEndpoint,
+		minioRegion,
+		minioAccessKey,
+		minioSecretKey,
+		minioBucket,
+	)
+
+	handler := metadata.NewHandler(db, s3Service, rdb)
 
 	webhookHandler, err := metadata.NewWebhookHandler(db, rabbitURL)
 	if err != nil {
-		log.Fatalf("Failed to initialize webhook handler: %v", err)
+		logger.Log.Fatal("Failed to initialize webhook handler", zap.Error(err))
 	}
+
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	r.GET("/api/metadata/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -52,8 +95,15 @@ func main() {
 	r.Any("/api/v1/webhooks/live", webhookHandler.HandleLiveWebhook)
 	r.POST("/api/v1/webhooks/vod", webhookHandler.HandleVODWebhook)
 
-	fmt.Println("Metadata Service running on :8081")
+	logger.Log.Info("Metadata Service running on :8081")
 	if err := r.Run(":8081"); err != nil {
-		log.Fatal(err)
+		logger.Log.Fatal("Failed to start metadata service", zap.Error(err))
 	}
+}
+
+func getEnvOrDefault(key, fallback string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return fallback
 }

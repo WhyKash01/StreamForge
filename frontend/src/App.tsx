@@ -1,3 +1,4 @@
+
 import { Routes, Route, Link, useNavigate } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import type { RootState } from './store/store';
@@ -10,7 +11,7 @@ import Upload from './pages/Upload';
 import Live from './pages/Live';
 import Channel from './pages/Channel';
 import api from './api/axios';
-import { User as UserIcon, Key } from 'lucide-react';
+import { User as UserIcon, Radio } from 'lucide-react';
 
 function App() {
   const { isAuthenticated, user } = useSelector((state: RootState) => state.auth);
@@ -27,30 +28,21 @@ function App() {
     navigate('/login');
   };
 
-  const handleCopyKey = () => {
-    if (user?.stream_key) {
-      navigator.clipboard.writeText(user.stream_key);
-      alert('Stream Key copied to clipboard!');
-    }
-  };
+
 
   return (
     <div className="min-h-screen flex flex-col bg-zinc-950 text-zinc-100">
-      <nav className="flex justify-between items-center px-6 py-4 bg-zinc-900 border-b border-zinc-800 relative z-50">
+      <nav className="flex justify-between items-center px-6 py-4 bg-zinc-900/80 backdrop-blur-md border-b border-zinc-800/60 sticky top-0 z-50">
         <div className="flex items-center gap-6">
           <Link to="/" className="text-2xl font-bold bg-linear-to-r from-rose-500 to-orange-500 bg-clip-text text-transparent hover:opacity-80 transition-opacity">
             StreamForge
           </Link>
-          <Link to="/live" className="text-sm font-semibold text-zinc-300 hover:text-rose-400 transition-colors flex items-center gap-2">
-            <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-            Live
-          </Link>
         </div>
         <div>
           {isAuthenticated ? (
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
               
-              <Link to={`/channel/${user?.username}`} className="flex items-center gap-2 text-zinc-300 hover:text-white transition-colors mr-2">
+              <Link to={`/channel/${user?.username}`} className="flex items-center gap-2 text-zinc-300 hover:text-white transition-colors mr-1">
                 {user?.avatar_url ? (
                   <img src={user.avatar_url} alt="Avatar" className="w-8 h-8 rounded-full object-cover border border-zinc-700" />
                 ) : (
@@ -61,21 +53,22 @@ function App() {
                 <span className="text-sm font-medium hidden sm:block">{user?.display_name || user?.username}</span>
               </Link>
 
-              <button 
-                onClick={handleCopyKey}
-                className="flex items-center gap-2 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-medium transition-colors border border-zinc-700"
-                title="Copy Stream Key"
-              >
-                <Key className="w-3 h-3" />
-                <span className="hidden sm:block">Stream Key</span>
-              </button>
 
-              <Link to="/upload" className="px-4 py-1.5 text-sm font-medium bg-rose-600 hover:bg-rose-500 text-white rounded-lg transition-colors shadow-lg shadow-rose-500/20">
+
+              <Link 
+                to="/live" 
+                className="flex items-center gap-2 px-4 py-1.5 text-sm font-medium bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors shadow-lg shadow-red-500/20"
+              >
+                <Radio className="w-3.5 h-3.5" />
+                Go Live
+              </Link>
+
+              <Link to="/upload" className="px-4 py-1.5 text-sm font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg transition-colors border border-zinc-700">
                 Upload
               </Link>
               <button 
                 onClick={handleLogout} 
-                className="px-4 py-1.5 text-sm font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg transition-colors border border-zinc-700"
+                className="px-4 py-1.5 text-sm font-medium text-zinc-400 hover:text-zinc-200 transition-colors"
               >
                 Logout
               </button>

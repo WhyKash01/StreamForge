@@ -11,6 +11,7 @@ type Video struct {
 	URL          string `json:"url"` // Used for VOD URL or Live Stream URL
 	Type         string `json:"type"` // "VOD" or "Live"
 	Status       string `json:"status"` // "Uploaded", "Live", "Offline", "Processing", "Done"
+	Visibility   string `gorm:"default:'public'" json:"visibility"` // "public", "private", "unlisted"
 	ThumbnailURL string `json:"thumbnail_url"`
 	Views        int64  `json:"views"`
 	

@@ -96,7 +96,7 @@ func (h *Handler) HandleInitUpload(c *gin.Context) {
 
 	videoPresignedURL, err := h.s3Service.GeneratePresignedURL(c.Request.Context(), videoKey, req.ContentType)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate video URL"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate video URL: " + err.Error()})
 		return
 	}
 
@@ -104,7 +104,7 @@ func (h *Handler) HandleInitUpload(c *gin.Context) {
 	if req.HasThumbnail {
 		thumbPresignedURL, err = h.s3Service.GeneratePresignedURL(c.Request.Context(), thumbKey, req.ThumbnailContentType)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate thumbnail URL"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate thumbnail URL: " + err.Error()})
 			return
 		}
 	}
@@ -191,12 +191,15 @@ func (h *Handler) GetLiveStatus(c *gin.Context) {
 	userID := c.GetUint("userID")
 
 	var video models.Video
-	if err := h.db.Where("user_id = ? AND (type = 'Live' OR url LIKE '%_live_%')", userID).Order("created_at desc").First(&video).Error; err != nil {
+	if err := h.db.Where("user_id = ? AND (type = 'Live' OR url LIKE '%_syslive_%')", userID).Order("created_at desc").First(&video).Error; err != nil {
 		c.JSON(http.StatusOK, gin.H{"status": "Offline"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": video.Status})
+	c.JSON(http.StatusOK, gin.H{
+		"status": video.Status,
+		"video_id": video.ID,
+	})
 }
 
 // HandlePresignedURL (Legacy - Keep for now if needed by other tools)
