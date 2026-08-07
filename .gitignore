@@ -21,3 +21,7 @@ recordings/
 # OS Files
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
+process_log.txt
