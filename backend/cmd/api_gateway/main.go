@@ -6,11 +6,13 @@ import (
 	"time"
 
 	"streamforge/internal/auth"
+	"streamforge/internal/comments"
 	"streamforge/internal/live"
 	"streamforge/internal/metadata"
 	"streamforge/internal/middleware"
 	"streamforge/internal/models"
 	"streamforge/internal/upload"
+	"streamforge/internal/videos"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -50,7 +52,7 @@ func main() {
 	}
 
 	// Run Migrations
-	if err := db.AutoMigrate(&models.User{}, &models.Video{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Video{}, &models.Subscription{}, &models.VideoView{}, &models.Comment{}, &models.CommentLike{}, &models.VideoLike{}, &models.VideoDislike{}); err != nil {
 		logger.Log.Fatal("Failed to migrate models", zap.Error(err))
 	}
 
@@ -77,6 +79,7 @@ func main() {
 
 	// Middlewares
 	authMiddleware := middleware.RequireAuth(db)
+	optionalAuthMiddleware := middleware.OptionalAuth(db)
 
 	// Initialize Handlers
 	authHandler := auth.NewHandler(db)
@@ -92,6 +95,7 @@ func main() {
 		authGroup.POST("/login", authHandler.Login)
 		authGroup.POST("/refresh", authHandler.Refresh)
 		authGroup.POST("/logout", authHandler.Logout)
+		authGroup.GET("/me", authMiddleware, authHandler.GetMe)
 	}
 
 	// Initialize Upload Handler with MinIO config
@@ -114,6 +118,7 @@ func main() {
 	uploadGroup := r.Group("/api/upload")
 	{
 		uploadGroup.POST("/init", authMiddleware, uploadHandler.HandleInitUpload)
+		uploadGroup.POST("/image/init", authMiddleware, uploadHandler.HandleInitImageUpload)
 		uploadGroup.GET("/presigned", authMiddleware, uploadHandler.HandlePresignedURL)
 		uploadGroup.GET("/videos", uploadHandler.HandleListVideos)
 	}
@@ -126,10 +131,27 @@ func main() {
 	metadataHandler := metadata.NewHandler(db, s3Service, rdb)
 	r.GET("/api/metadata/videos", metadataHandler.ListVideos)
 	r.GET("/api/metadata/videos/:id/play", metadataHandler.GetVideoPlayback)
+	r.POST("/api/metadata/videos/:id/view", optionalAuthMiddleware, metadataHandler.RecordView)
 	r.GET("/api/metadata/videos/:id/status", authMiddleware, metadataHandler.GetVideoStatus)
 	r.DELETE("/api/metadata/videos/:id", authMiddleware, metadataHandler.DeleteVideo)
-	r.GET("/api/channel/:username", metadataHandler.GetChannel)
+	r.GET("/api/channel/:username", optionalAuthMiddleware, metadataHandler.GetChannel)
 	r.GET("/api/channel/id/:user_id/videos", metadataHandler.GetUserVideos)
+	r.GET("/api/channels/subscriptions", authMiddleware, metadataHandler.GetSubscribedChannels)
+	r.POST("/api/channels/:id/subscribe", authMiddleware, metadataHandler.ToggleSubscription)
+	r.PUT("/api/users/me", authMiddleware, metadataHandler.UpdateUser)
+	r.PUT("/api/videos/:id", authMiddleware, metadataHandler.UpdateVideo)
+
+	// Comments & Likes Routes
+	commentsHandler := comments.NewHandler(db)
+	r.GET("/api/videos/:id/comments", commentsHandler.GetCommentsByVideo)
+	r.POST("/api/videos/:id/comments", authMiddleware, commentsHandler.CreateComment)
+	r.DELETE("/api/comments/:id", authMiddleware, commentsHandler.DeleteComment)
+	r.POST("/api/comments/:id/like", authMiddleware, commentsHandler.ToggleLikeComment)
+
+	videosHandler := videos.NewHandler(db)
+	r.POST("/api/videos/:id/like", authMiddleware, videosHandler.ToggleLikeVideo)
+	r.POST("/api/videos/:id/dislike", authMiddleware, videosHandler.ToggleDislikeVideo)
+	r.GET("/api/videos/:id/like_status", optionalAuthMiddleware, videosHandler.GetVideoLikeStatus)
 
 	// Webhooks
 	webhookHandler := live.NewWebhookHandler(s3Service, db)

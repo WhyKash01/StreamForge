@@ -2,6 +2,7 @@ version: '3.8'
 services:
   db:
     image: postgres:15-alpine
+    mem_limit: 512m
     environment:
       POSTGRES_USER: streamforge
       POSTGRES_PASSWORD: password
@@ -19,16 +20,35 @@ services:
   
   minio:
     image: minio/minio:latest
+    mem_limit: 512m
     ports:
       - "9000:9000"
       - "9001:9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_NOTIFY_WEBHOOK_ENABLE_vod: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_vod: "http://metadata-service:8081/api/v1/webhooks/vod"
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
     restart: unless-stopped
+
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+      - metadata_service
+      - nginx
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Waiting for MinIO...';
+      sleep 10;
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/streamforge --ignore-existing;
+      mc event add myminio/streamforge arn:minio:sqs::vod:webhook --event put;
+      echo 'MinIO Webhooks Configured.';
+      "
 
   mediamtx:
     image: bluenviron/mediamtx:latest-ffmpeg
@@ -44,6 +64,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
+    mem_limit: 512m
     ports:
       - "5672:5672"   # AMQP protocol port
       - "15672:15672" # Management UI
@@ -73,66 +94,92 @@ services:
               count: 1
               capabilities: [gpu]
 
-  prometheus:
-    image: prom/prometheus:latest
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-    restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+#  prometheus:
+#    image: prom/prometheus:latest
+#    ports:
+#      - "9090:9090"
+#    volumes:
+#      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+#    restart: unless-stopped
+#    extra_hosts:
+#      - "host.docker.internal:host-gateway"
+#
+#  grafana:
+#    image: grafana/grafana:latest
+#    ports:
+#      - "3000:3000"
+#    environment:
+#      - GF_SECURITY_ADMIN_PASSWORD=admin
+#    depends_on:
+#      - prometheus
+#    restart: unless-stopped
 
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
+  api_gateway:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.api
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - DB_HOST=db
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_PUBLIC_ENDPOINT=http://localhost:9000
+      - FRONTEND_URL=http://localhost
     depends_on:
-      - prometheus
+      - db
+      - minio
+    volumes:
+      - ./recordings:/recordings
+    restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          - api-gateway
+
+  metadata_service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.metadata
+    environment:
+      - DB_HOST=db
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_PUBLIC_ENDPOINT=http://localhost:9000
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      - db
+      - rabbitmq
+    restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          - metadata-service
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost/api
+    environment:
+      - VITE_API_URL=http://localhost/api
+    depends_on:
+      - api_gateway
     restart: unless-stopped
 
-#  api_gateway:
-#    build:
-#      context: ./backend
-#      dockerfile: Dockerfile.api
-#    ports:
-#      - "8080:8080"
-#    environment:
-#      - DB_HOST=db
-#      - MINIO_ENDPOINT=http://minio:9000
-#      - FRONTEND_URL=http://localhost:5173
-#    depends_on:
-#      - db
-#      - minio
-#    restart: unless-stopped
-#
-#  metadata_service:
-#    build:
-#      context: ./backend
-#      dockerfile: Dockerfile.metadata
-#    ports:
-#      - "8081:8081"
-#    environment:
-#      - DB_HOST=db
-#      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-#    depends_on:
-#      - db
-#      - rabbitmq
-#    restart: unless-stopped
-#
-#  frontend:
-#    build:
-#      context: ./frontend
-#      dockerfile: Dockerfile
-#    ports:
-#      - "5173:80"
-#    environment:
-#      - VITE_API_URL=http://localhost:8080/api
-#    depends_on:
-#      - api_gateway
-#    restart: unless-stopped
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api_gateway
+      - frontend
+    restart: unless-stopped
+
+  adminer:
+    image: adminer
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
 
 volumes:
   pgdata:

@@ -1,8 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import api from '../api/axios';
-import { Radio, Video, User as UserIcon } from 'lucide-react';
+import { Video, User as UserIcon } from 'lucide-react';
 import type { RootState } from '../store/store';
 import { setVideos, setLoading } from '../store/slices/appSlice';
 import type { DBVideo } from '../store/slices/appSlice';
@@ -43,29 +43,51 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [dispatch]);
 
-  const liveStreams = dbVideos.filter(v => v.type === 'Live' && v.status === 'Live');
-  const vods = dbVideos.filter(v => v.status === 'Done');
+  const [filter, setFilter] = useState<'all' | 'live' | 'videos'>('all');
 
-  const renderChannelInfo = (video: DBVideo) => {
+  const displayVideos = dbVideos
+    // Base filter: only show Live streams or completely processed videos
+    .filter(v => v.status === 'Live' || v.status === 'Done' || (v.type === 'Live' && v.status === 'Processing'))
+    // Category filter
+    .filter(v => {
+      if (filter === 'live') return v.type === 'Live';
+      if (filter === 'videos') return v.type === 'VOD' && v.status === 'Done';
+      return true; // 'all' shows both
+    })
+    // Sort logic: Active 'Live' status on top, then sort by date descending
+    .sort((a, b) => {
+      const aIsLive = (a.type === 'Live' && (a.status === 'Live' || a.status === 'Processing')) ? 1 : 0;
+      const bIsLive = (b.type === 'Live' && (b.status === 'Live' || b.status === 'Processing')) ? 1 : 0;
+      
+      if (aIsLive !== bIsLive) {
+        return bIsLive - aIsLive; // Push active live streams to the top
+      }
+      
+      // If both are live or both are done, sort by date
+      return new Date(b.CreatedAt).getTime() - new Date(a.CreatedAt).getTime();
+    });
+
+  const renderChannelAvatar = (video: DBVideo) => {
     if (!video.User) return null;
-    const displayName = video.User.display_name || video.User.username;
-    
     return (
-      <Link 
-        to={`/channel/${video.User.username}`}
-        className="flex items-center gap-2 mt-2 group/channel w-fit"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <Link to={`/channel/${video.User.username}`} onClick={(e) => e.stopPropagation()} className="shrink-0">
         {video.User.avatar_url ? (
-          <img src={video.User.avatar_url} alt={displayName} className="w-6 h-6 rounded-full object-cover border border-zinc-700" />
+          <img src={video.User.avatar_url} alt="" className="w-9 h-9 rounded-full object-cover bg-zinc-800" />
         ) : (
-          <div className="w-6 h-6 rounded-full bg-zinc-800 flex items-center justify-center border border-zinc-700 text-zinc-400">
-            <UserIcon className="w-3 h-3" />
+          <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center text-zinc-400">
+            <UserIcon className="w-5 h-5" />
           </div>
         )}
-        <span className="text-xs text-zinc-400 group-hover/channel:text-zinc-200 transition-colors">
-          {displayName}
-        </span>
+      </Link>
+    );
+  };
+
+  const renderChannelMeta = (video: DBVideo) => {
+    if (!video.User) return null;
+    const displayName = video.User.display_name || video.User.username;
+    return (
+      <Link to={`/channel/${video.User.username}`} onClick={(e) => e.stopPropagation()} className="text-sm text-zinc-400 hover:text-white transition-colors block truncate">
+        {displayName}
       </Link>
     );
   };
@@ -85,166 +107,101 @@ export default function Home() {
   );
 
   return (
-    <div className="flex flex-col gap-8">
-
-      {/* Live Now Hero Section */}
-      {liveStreams.length > 0 && (
-        <section className="relative">
-          <div className="absolute inset-0 bg-gradient-to-b from-rose-500/5 to-transparent rounded-3xl pointer-events-none" />
-          
-          <div className="flex items-center gap-3 mb-6">
-            <div className="relative">
-              <Radio className="w-6 h-6 text-red-500" />
-              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse" />
-            </div>
-            <h2 className="text-xl font-bold text-white">Live Now</h2>
-            <span className="text-xs font-medium text-red-400 bg-red-500/10 px-2 py-0.5 rounded-full border border-red-500/20">
-              {liveStreams.length} stream{liveStreams.length > 1 ? 's' : ''}
-            </span>
-          </div>
-
-          {/* Featured live stream (first one) */}
-          <Link 
-            to={`/video/${liveStreams[0].ID}`}
-            className="group block mb-6 bg-zinc-900 rounded-2xl overflow-hidden border border-rose-500/20 hover:border-rose-500/40 transition-all shadow-2xl shadow-rose-900/10"
-          >
-            <div className="grid grid-cols-1 lg:grid-cols-5">
-              <div className="lg:col-span-3 aspect-video lg:aspect-auto bg-zinc-950 relative overflow-hidden">
-                <div className="absolute top-4 left-4 z-10 flex items-center gap-2">
-                  <span className="bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-md flex items-center gap-1.5 shadow-lg shadow-red-500/30">
-                    <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
-                    LIVE
-                  </span>
-                </div>
-                {liveStreams[0].thumbnail_url ? (
-                  <img 
-                    src={liveStreams[0].thumbnail_url} 
-                    alt={liveStreams[0].title} 
-                    className="w-full h-full object-cover opacity-90 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500" 
-                  />
-                ) : (
-                  <div className="w-full h-full min-h-64 flex items-center justify-center bg-gradient-to-br from-rose-950 to-zinc-950">
-                    <Radio className="w-16 h-16 text-rose-900/50 group-hover:text-rose-500/50 transition-colors" />
-                  </div>
-                )}
-              </div>
-              <div className="lg:col-span-2 p-6 lg:p-8 flex flex-col justify-center border-t lg:border-t-0 lg:border-l border-zinc-800">
-                <h3 className="text-2xl font-bold text-white group-hover:text-rose-400 transition-colors mb-3 line-clamp-2">
-                  {liveStreams[0].title}
-                </h3>
-                {liveStreams[0].description && (
-                  <p className="text-zinc-400 text-sm mb-4 line-clamp-3">{liveStreams[0].description}</p>
-                )}
-                {liveStreams[0].User && (
-                  <div className="flex items-center gap-3 mt-auto">
-                    {liveStreams[0].User.avatar_url ? (
-                      <img src={liveStreams[0].User.avatar_url} alt="" className="w-10 h-10 rounded-full object-cover border-2 border-rose-500/30" />
-                    ) : (
-                      <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center border-2 border-rose-500/30">
-                        <UserIcon className="w-5 h-5 text-zinc-400" />
-                      </div>
-                    )}
-                    <div>
-                      <div className="text-sm font-semibold text-zinc-100">
-                        {liveStreams[0].User.display_name || liveStreams[0].User.username}
-                      </div>
-                      <div className="text-xs text-zinc-500">Streaming now</div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </Link>
-
-          {/* Additional live streams */}
-          {liveStreams.length > 1 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {liveStreams.slice(1).map((stream) => (
-                <Link 
-                  to={`/video/${stream.ID}`} 
-                  key={stream.ID}
-                  className="group flex flex-col bg-zinc-900 rounded-xl overflow-hidden border border-rose-900/30 hover:border-rose-500/50 transition-all shadow-xl shadow-rose-900/10"
-                >
-                  <div className="aspect-video bg-zinc-950 relative overflow-hidden">
-                    <div className="absolute top-2 left-2 z-10">
-                      <span className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1 shadow-lg shadow-red-500/30">
-                        <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
-                        LIVE
-                      </span>
-                    </div>
-                    {stream.thumbnail_url ? (
-                      <img src={stream.thumbnail_url} alt={stream.title} className="w-full h-full object-cover opacity-90 group-hover:opacity-100 group-hover:scale-105 transition-all duration-300" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <Radio className="w-10 h-10 text-rose-900/50 group-hover:text-rose-500 transition-colors" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="p-4 border-t border-zinc-800 flex-1 flex flex-col">
-                    <h3 className="font-semibold text-zinc-100 group-hover:text-rose-400 transition-colors truncate text-sm">
-                      {stream.title}
-                    </h3>
-                    {renderChannelInfo(stream)}
-                  </div>
-                </Link>
-              ))}
-            </div>
-          )}
-        </section>
-      )}
+    <div className="flex flex-col gap-6">
       
-      {/* Videos Section */}
-      <section>
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-1.5 h-6 bg-rose-500 rounded-full" />
-          <h2 className="text-xl font-bold text-white">Videos</h2>
-          {!loading && vods.length > 0 && (
-            <span className="text-xs font-medium text-zinc-500">
-              {vods.length} video{vods.length > 1 ? 's' : ''}
-            </span>
-          )}
-        </div>
+      {/* Category Filters (YouTube style) */}
+      <div className="flex items-center gap-3 overflow-x-auto pb-2 scrollbar-hide">
+        <button
+          onClick={() => setFilter('all')}
+          className={`px-4 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
+            filter === 'all' ? 'bg-white text-black' : 'bg-zinc-800 text-zinc-200 hover:bg-zinc-700'
+          }`}
+        >
+          All
+        </button>
+        <button
+          onClick={() => setFilter('live')}
+          className={`px-4 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
+            filter === 'live' ? 'bg-white text-black' : 'bg-zinc-800 text-zinc-200 hover:bg-zinc-700'
+          }`}
+        >
+          Live
+        </button>
+        <button
+          onClick={() => setFilter('videos')}
+          className={`px-4 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
+            filter === 'videos' ? 'bg-white text-black' : 'bg-zinc-800 text-zinc-200 hover:bg-zinc-700'
+          }`}
+        >
+          Videos
+        </button>
+      </div>
 
+      {/* Videos Grid */}
+      <section>
         {loading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {[...Array(8)].map((_, i) => <SkeletonCard key={i} />)}
           </div>
-        ) : vods.length === 0 ? (
-          <div className="text-center py-16 bg-zinc-900/50 rounded-2xl border border-zinc-800/50">
+        ) : displayVideos.length === 0 ? (
+          <div className="text-center py-16 bg-zinc-900/50 rounded-2xl border border-zinc-800/50 mt-4">
             <Video className="w-12 h-12 text-zinc-700 mx-auto mb-4" />
-            <h3 className="text-lg font-semibold text-zinc-300 mb-2">No videos yet</h3>
+            <h3 className="text-lg font-semibold text-zinc-300 mb-2">No videos found</h3>
             <p className="text-zinc-500 text-sm max-w-md mx-auto">
-              Start a live stream or upload a video to get started.
+              There are no videos matching the selected category.
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {vods.map((video) => (
-              <Link 
-                to={`/video/${video.ID}`}
-                key={video.ID} 
-                className="group flex flex-col bg-zinc-900 rounded-xl overflow-hidden border border-zinc-800 hover:border-zinc-700 transition-all hover:-translate-y-1 hover:shadow-xl hover:shadow-rose-900/10"
-              >
-                <div className="aspect-video bg-zinc-950 flex items-center justify-center overflow-hidden relative">
-                  {video.thumbnail_url ? (
-                    <img src={video.thumbnail_url} alt={video.title} className="w-full h-full object-cover opacity-90 group-hover:opacity-100 group-hover:scale-105 transition-all duration-300" />
-                  ) : (
-                    <Video className="w-10 h-10 text-zinc-700 group-hover:text-rose-500 transition-colors" />
-                  )}
-                  {video.CreatedAt && (
-                    <div className="absolute bottom-2 right-2 bg-black/70 text-zinc-300 text-[10px] font-medium px-1.5 py-0.5 rounded backdrop-blur-sm">
-                      {timeAgo(video.CreatedAt)}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mt-2">
+            {displayVideos.map((video) => {
+              const isCurrentlyLive = video.type === 'Live' && (video.status === 'Live' || video.status === 'Processing');
+              
+              return (
+                <Link 
+                  to={`/video/${video.ID}`}
+                  key={video.ID} 
+                  className="group flex flex-col transition-all cursor-pointer"
+                >
+                  <div className={`aspect-video bg-zinc-900 rounded-xl overflow-hidden relative ${isCurrentlyLive ? 'border border-rose-500/30 group-hover:border-rose-500/60' : ''}`}>
+                    {video.thumbnail_url ? (
+                      <img src={video.thumbnail_url} alt={video.title} className="w-full h-full object-cover group-hover:scale-105 transition-all duration-300" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <Video className="w-8 h-8 text-zinc-700" />
+                      </div>
+                    )}
+                    
+                    {/* Overlay Badges */}
+                    {isCurrentlyLive ? (
+                      <div className="absolute bottom-2 right-2 bg-red-600 text-white text-[11px] font-bold px-2 py-0.5 rounded flex items-center gap-1.5 shadow-lg">
+                        <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+                        LIVE
+                      </div>
+                    ) : video.CreatedAt && (
+                      <div className="absolute bottom-2 right-2 bg-black/80 text-white text-[11px] font-bold px-1.5 py-0.5 rounded">
+                        {timeAgo(video.CreatedAt)}
+                      </div>
+                    )}
+                  </div>
+                  <div className="mt-3 flex gap-3 pr-2">
+                    {renderChannelAvatar(video)}
+                    <div className="flex flex-col overflow-hidden">
+                      <h3 className="font-medium text-zinc-100 line-clamp-2 text-sm leading-snug">
+                        {video.title}
+                      </h3>
+                      <div className="mt-1 flex flex-col text-xs text-zinc-400">
+                        {renderChannelMeta(video)}
+                        {isCurrentlyLive ? (
+                          <span className="text-rose-500 font-medium mt-0.5">Streaming now</span>
+                        ) : (
+                          <span>{video.views || 0} views • {timeAgo(video.CreatedAt)}</span>
+                        )}
+                      </div>
                     </div>
-                  )}
-                </div>
-                <div className="p-4 border-t border-zinc-800 flex-1 flex flex-col">
-                  <h3 className="font-semibold text-zinc-100 group-hover:text-rose-400 transition-colors truncate text-sm">
-                    {video.title}
-                  </h3>
-                  {renderChannelInfo(video)}
-                </div>
-              </Link>
-            ))}
+                  </div>
+                </Link>
+              );
+            })}
           </div>
         )}
       </section>

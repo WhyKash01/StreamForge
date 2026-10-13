@@ -33,6 +33,8 @@ type InitUploadRequest struct {
 	ContentType          string `json:"contentType" binding:"required"`
 	HasThumbnail         bool   `json:"hasThumbnail"`
 	ThumbnailContentType string `json:"thumbnailContentType"`
+	Category             string `json:"category"`
+	Tags                 string `json:"tags"`
 }
 
 var defaultThumbnails = []string{
@@ -87,6 +89,8 @@ func (h *Handler) HandleInitUpload(c *gin.Context) {
 		Status:       "Pending", // Wait for MinIO webhook to change this to Uploaded
 		ThumbnailURL: thumbnailURL,
 		UserID:       userID,
+		Category:     req.Category,
+		Tags:         req.Tags,
 	}
 
 	if err := h.db.Create(&video).Error; err != nil {
@@ -122,6 +126,8 @@ type LiveSettingsRequest struct {
 	Description          string `json:"description"`
 	HasThumbnail         bool   `json:"hasThumbnail"`
 	ThumbnailContentType string `json:"thumbnailContentType"`
+	Category             string `json:"category"`
+	Tags                 string `json:"tags"`
 }
 
 // HandleLiveSettings updates user live stream settings and returns thumbnail presigned URL
@@ -155,6 +161,8 @@ func (h *Handler) HandleLiveSettings(c *gin.Context) {
 		"live_title":         req.Title,
 		"live_description":   req.Description,
 		"live_thumbnail_url": thumbnailURL,
+		"live_category":      req.Category,
+		"live_tags":          req.Tags,
 	}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update live settings"})
 		return
@@ -167,6 +175,8 @@ func (h *Handler) HandleLiveSettings(c *gin.Context) {
 			"title":         req.Title,
 			"description":   req.Description,
 			"thumbnail_url": thumbnailURL,
+			"category":      req.Category,
+			"tags":          req.Tags,
 		})
 
 	var thumbPresignedURL string
@@ -260,5 +270,53 @@ func (h *Handler) HandleListVideos(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"videos": videos,
+	})
+}
+
+type InitImageUploadRequest struct {
+	Type        string `json:"type" binding:"required"` // "avatar", "banner", or "thumbnail"
+	ContentType string `json:"contentType" binding:"required"` // e.g. "image/png", "image/jpeg"
+}
+
+// HandleInitImageUpload generates a presigned URL for direct image uploads to MinIO
+func (h *Handler) HandleInitImageUpload(c *gin.Context) {
+	var req InitImageUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID := c.GetUint("userID")
+
+	ext := ".jpg"
+	if req.ContentType == "image/png" {
+		ext = ".png"
+	} else if req.ContentType == "image/webp" {
+		ext = ".webp"
+	} else if req.ContentType == "image/gif" {
+		ext = ".gif"
+	}
+
+	// Determine S3 folder based on type
+	folder := "thumbnails"
+	if req.Type == "avatar" || req.Type == "banner" {
+		folder = "avatars"
+	}
+
+	objectKey := fmt.Sprintf("%s/%d/%d_%s%s", folder, userID, time.Now().Unix(), req.Type, ext)
+
+	presignedUrl, err := h.s3Service.GeneratePresignedURL(c.Request.Context(), objectKey, req.ContentType)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate presigned URL"})
+		return
+	}
+
+	// Final public URL
+	publicUrl := fmt.Sprintf("http://localhost:9000/streamforge/%s", objectKey)
+
+	c.JSON(http.StatusOK, gin.H{
+		"presignedUrl": presignedUrl,
+		"publicUrl":    publicUrl,
+		"objectKey":    objectKey,
 	})
 }

@@ -22,7 +22,7 @@ rtmpAddress: :1935
 
 # Authentication settings
 authMethod: http
-externalAuthenticationURL: http://host.docker.internal:8080/api/webhooks/mediamtx/auth
+externalAuthenticationURL: http://api-gateway:8080/api/webhooks/mediamtx/auth
 
 ###############################################
 # Path Settings
@@ -37,8 +37,8 @@ paths:
 
     # Triggered when a stream starts publishing
     runOnAvailable: >
-      sh -c "wget -qO- 'http://host.docker.internal:8081/api/v1/webhooks/live?action=publish&path=$MTX_PATH'"
+      sh -c "wget -qO- 'http://metadata-service:8081/api/v1/webhooks/live?action=publish&path=$MTX_PATH'"
 
     # Triggered when a stream stops publishing
     runOnUnavailable: >
-      sh -c "wget -qO- 'http://host.docker.internal:8081/api/v1/webhooks/live?action=publishDone&path=$MTX_PATH' ; wget -qO- 'http://host.docker.internal:8080/api/webhooks/mediamtx?action=publishDone&path=$MTX_PATH'"
+      sh -c "wget -qO- 'http://metadata-service:8081/api/v1/webhooks/live?action=publishDone&path=$MTX_PATH' ; wget -qO- 'http://api-gateway:8080/api/webhooks/mediamtx?action=publishDone&path=$MTX_PATH'"

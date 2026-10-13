@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type WebhookHandler struct {
@@ -139,31 +140,42 @@ func (h *WebhookHandler) HandleLiveWebhook(c *gin.Context) {
 			title = fmt.Sprintf("%s's Live Stream", user.DisplayName)
 		}
 		
-		video := models.Video{
-			Title:        title,
-			Description:  user.LiveDescription,
-			URL:          streamURL,
-			Type:         "Live",
-			Status:       "Live",
-			UserID:       user.ID,
-			ThumbnailURL: user.LiveThumbnailURL,
-		}
+		var video models.Video
+		err := h.DB.Transaction(func(tx *gorm.DB) error {
+			return tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where(models.Video{URL: streamURL, Type: "Live"}).Assign(models.Video{
+				Status:       "Live", 
+				UserID:       user.ID,
+				Title:        title,
+				Description:  user.LiveDescription,
+				ThumbnailURL: user.LiveThumbnailURL,
+				Category:     user.LiveCategory,
+				Tags:         user.LiveTags,
+			}).FirstOrCreate(&video).Error
+		})
 
-		// Update or Create
-		result := h.DB.Where(models.Video{URL: streamURL, Type: "Live"}).Assign(models.Video{
-			Status:       "Live", 
-			UserID:       user.ID,
-			Title:        video.Title,
-			Description:  video.Description,
-			ThumbnailURL: video.ThumbnailURL,
-		}).FirstOrCreate(&video)
-		if result.Error != nil {
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 			return
 		}
+
+		// Enqueue the live stream for real-time HLS transcoding outside the transaction
+		err = h.pushToQueue(TranscodeJob{
+			VideoID: video.ID,
+			URL:     streamURL,
+			Type:    "Live",
+		})
+		if err != nil {
+			log.Printf("Failed to push Live TranscodeJob to RabbitMQ: %v", err)
+		}
 	case "publishDone":
 		// Stream Ended (currently uploading to S3)
-		h.DB.Model(&models.Video{}).Where("url = ? AND type = ?", streamURL, "Live").Update("status", "Uploading")
+		h.DB.Transaction(func(tx *gorm.DB) error {
+			return tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Model(&models.Video{}).
+				Where("url = ? AND type = ?", streamURL, "Live").
+				Where("status IN ?", []string{"Live", "Processing"}).
+				Update("status", "Uploading").Error
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "received"})
@@ -222,65 +234,84 @@ func (h *WebhookHandler) HandleVODWebhook(c *gin.Context) {
 		// Extract user ID and timestamp prefix from objectKey (videos/{userID}/{timestamp}_{filename})
 		parts := strings.Split(objectKey, "/")
 		if len(parts) >= 3 {
-			// Find the video by URL since it was pre-created in /api/upload/init
 			var video models.Video
-			if err := h.DB.Where("url = ?", vodURL).First(&video).Error; err != nil {
-				// If not found, it wasn't initialized. Create a fallback or morph a Live stream.
-				var userID uint
-				if id, err := strconv.ParseUint(parts[1], 10, 32); err == nil {
-					userID = uint(id)
-				}
-				
-				isLiveRecording := strings.Contains(parts[len(parts)-1], "_syslive_")
-				morphedLive := false
+			var shouldPush bool
 
-				if isLiveRecording {
-					// Find the original Live video record that is currently "Uploading"
-					var liveVideo models.Video
-					if err := h.DB.Where("user_id = ? AND type = ?", userID, "Live").Order("created_at desc").First(&liveVideo).Error; err == nil {
-						// Morph this existing Live record into the final VOD!
-						title := liveVideo.Title
-						if !strings.HasSuffix(title, " (VOD)") {
-							title += " (VOD)"
+			err = h.DB.Transaction(func(tx *gorm.DB) error {
+				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("url = ?", vodURL).First(&video).Error; err != nil {
+					// If not found, it wasn't initialized. Create a fallback or morph a Live stream.
+					var userID uint
+					if id, err := strconv.ParseUint(parts[1], 10, 32); err == nil {
+						userID = uint(id)
+					}
+					
+					isLiveRecording := strings.Contains(parts[len(parts)-1], "_syslive_")
+					morphedLive := false
+
+					if isLiveRecording {
+						// Find the original Live video record that is currently "Uploading"
+						var liveVideo models.Video
+						if err := tx.Where("user_id = ? AND type = ?", userID, "Live").Order("created_at desc").First(&liveVideo).Error; err == nil {
+							// Morph this existing Live record into the final VOD!
+							title := liveVideo.Title
+							if !strings.HasSuffix(title, " (VOD)") {
+								title += " (VOD)"
+							}
+							
+							tx.Model(&liveVideo).Updates(map[string]interface{}{
+								"url":    vodURL,
+								"status": "Uploaded",
+								"title":  title,
+							})
+							
+							video = liveVideo
+							morphedLive = true
 						}
-						
-						h.DB.Model(&liveVideo).Updates(map[string]interface{}{
-							"type":   "VOD",
-							"url":    vodURL,
-							"status": "Uploaded",
-							"title":  title,
-						})
-						
-						video = liveVideo
-						morphedLive = true
 					}
-				}
 
-				if !morphedLive {
-					// Standard fallback creation if it wasn't a live stream (or live record was lost)
-					video = models.Video{
-						Title:        fmt.Sprintf("Uploaded VOD: %s", parts[len(parts)-1]),
-						Description:  "VOD Upload",
-						URL:          vodURL,
-						Type:         "VOD",
-						Status:       "Uploaded",
-						UserID:       userID,
+					if !morphedLive {
+						// Standard fallback creation if it wasn't a live stream (or live record was lost)
+						video = models.Video{
+							Title:        fmt.Sprintf("Uploaded VOD: %s", parts[len(parts)-1]),
+							Description:  "VOD Upload",
+							URL:          vodURL,
+							Type:         "VOD",
+							Status:       "Uploaded",
+							UserID:       userID,
+						}
+						tx.Create(&video)
 					}
-					h.DB.Create(&video)
+					shouldPush = true
+					return nil
+				} else {
+					// Found initialized video, enforce state guard
+					if video.Status == "Uploading" || video.Status == "Live" || video.Status == "" || video.Status == "Pending" {
+						if err := tx.Model(&video).Update("status", "Uploaded").Error; err != nil {
+							return err
+						}
+						shouldPush = true
+					} else {
+						log.Printf("Ignoring VOD webhook for %s due to invalid state: %s", video.URL, video.Status)
+					}
+					return nil
 				}
-			} else {
-				// Found initialized video, update status
-				h.DB.Model(&video).Update("status", "Uploaded")
+			})
+
+			if err != nil {
+				log.Printf("Failed VOD transaction: %v", err)
+				continue
 			}
 
-			// Push to RabbitMQ for transcoding
-			err = h.pushToQueue(TranscodeJob{
-				VideoID: video.ID,
-				URL:     vodURL,
-				Type:    "VOD",
-			})
-			if err != nil {
-				log.Printf("Failed to push to RabbitMQ: %v", err)
+			if shouldPush {
+				// Push to RabbitMQ for transcoding outside of transaction
+				err = h.pushToQueue(TranscodeJob{
+					VideoID: video.ID,
+					URL:     vodURL,
+					Type:    "VOD",
+				})
+				if err != nil {
+					log.Printf("Failed to push to RabbitMQ: %v", err)
+				}
 			}
 		}
 	}

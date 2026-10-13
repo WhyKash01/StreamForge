@@ -88,8 +88,12 @@ func main() {
 	// Example routes
 	r.GET("/api/metadata/videos", handler.ListVideos)
 	r.GET("/api/metadata/videos/:id/play", handler.GetVideoPlayback)
+	r.GET("/api/metadata/videos/:id/status", handler.GetVideoStatus)
+	r.DELETE("/api/metadata/videos/:id", handler.DeleteVideo)
 	r.GET("/api/channel/:username", handler.GetChannel)
 	r.GET("/api/users/:user_id/videos", handler.GetUserVideos)
+	r.PUT("/api/users/me", handler.UpdateUser)
+	r.PUT("/api/videos/:id", handler.UpdateVideo)
 
 	// Webhooks
 	r.Any("/api/v1/webhooks/live", webhookHandler.HandleLiveWebhook)

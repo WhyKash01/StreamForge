@@ -65,6 +65,9 @@ func ValidateRefreshToken(tokenString string) (uint, error) {
 	})
 	
 	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return 0, errors.New("token expired")
+		}
 		return 0, err
 	}
 	
@@ -81,6 +84,9 @@ func ValidateAccessToken(tokenString string) (uint, error) {
 	})
 	
 	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return 0, errors.New("token expired")
+		}
 		return 0, err
 	}
 	

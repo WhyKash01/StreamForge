@@ -8,6 +8,7 @@ export interface DBVideo {
   type: string;
   status: string;
   thumbnail_url: string;
+  views?: number;
   CreatedAt: string;
   User?: {
     username: string;

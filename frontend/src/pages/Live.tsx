@@ -20,6 +20,8 @@ export default function Live() {
   // Stream Settings State
   const [title, setTitle] = useState(user?.live_title || '');
   const [description, setDescription] = useState(user?.live_description || '');
+  const [category, setCategory] = useState(user?.live_category || '');
+  const [tags, setTags] = useState(user?.live_tags || '');
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
   const thumbnailInputRef = useRef<HTMLInputElement>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -53,6 +55,8 @@ export default function Live() {
     if (user && !title && user.live_title) {
       setTitle(user.live_title);
       setDescription(user.live_description || '');
+      setCategory(user.live_category || '');
+      setTags(user.live_tags || '');
     }
   }, [user, title]);
 
@@ -87,6 +91,8 @@ export default function Live() {
         description,
         hasThumbnail: !!thumbnailFile,
         thumbnailContentType: thumbnailFile ? thumbnailFile.type : '',
+        category,
+        tags,
       });
 
       const { thumbnailPresignedUrl, thumbnailUrl } = res.data;
@@ -104,6 +110,8 @@ export default function Live() {
         live_title: title,
         live_description: description,
         live_thumbnail_url: thumbnailUrl,
+        live_category: category,
+        live_tags: tags,
       }));
 
       setSaveMessage('Settings saved!');
@@ -208,6 +216,36 @@ export default function Live() {
               className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-100 focus:outline-none focus:border-rose-500 transition-colors min-h-24 resize-y"
               placeholder="Details about this stream..."
             />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide">Category <span className="text-zinc-600 text-[10px] normal-case">(Optional)</span></label>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-100 focus:outline-none focus:border-rose-500 transition-colors appearance-none"
+              >
+                <option value="">Select Category...</option>
+                <option value="Gaming">Gaming</option>
+                <option value="Just Chatting">Just Chatting</option>
+                <option value="Music">Music</option>
+                <option value="Education">Education</option>
+                <option value="Technology">Technology</option>
+                <option value="Entertainment">Entertainment</option>
+                <option value="Sports">Sports</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide">Tags <span className="text-zinc-600 text-[10px] normal-case">(Optional)</span></label>
+              <input 
+                type="text"
+                value={tags}
+                onChange={(e) => setTags(e.target.value)}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-100 focus:outline-none focus:border-rose-500 transition-colors"
+                placeholder="e.g. gameplay, funny, tutorial"
+              />
+            </div>
           </div>
 
           <div>

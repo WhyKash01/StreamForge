@@ -30,7 +30,7 @@ func InitDB(dsn string) (*gorm.DB, error) {
 	}
 
 	// Auto migrate the structs
-	if err := db.AutoMigrate(&User{}, &Video{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Video{}, &Comment{}, &CommentLike{}, &VideoLike{}); err != nil {
 		return nil, err
 	}
 

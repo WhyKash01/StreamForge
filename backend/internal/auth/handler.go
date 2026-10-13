@@ -127,7 +127,11 @@ func (h *Handler) Refresh(c *gin.Context) {
 
 	userID, err := ValidateRefreshToken(refreshToken)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
+		if err.Error() == "token expired" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Your refresh token is expired", "code": "REFRESH_TOKEN_EXPIRED"})
+		} else {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
+		}
 		return
 	}
 
@@ -152,4 +156,36 @@ func (h *Handler) Refresh(c *gin.Context) {
 func (h *Handler) Logout(c *gin.Context) {
 	c.SetCookie("refresh_token", "", -1, "/", "localhost", false, true)
 	c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
+}
+
+// GetMe returns the authenticated user's profile
+func (h *Handler) GetMe(c *gin.Context) {
+	// The RequireAuth middleware already fetches the user and stores it in context
+	userObj, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found in context"})
+		return
+	}
+
+	user, ok := userObj.(models.User)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user context"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"user": gin.H{
+			"id":              user.ID,
+			"email":           user.Email,
+			"username":        user.Username,
+			"display_name":    user.DisplayName,
+			"avatar_url":      user.AvatarURL,
+			"banner_url":      user.BannerURL,
+			"bio":             user.Bio,
+			"is_verified":     user.IsVerified,
+			"followers_count": user.FollowersCount,
+			"following_count": user.FollowingCount,
+			"stream_key":      user.StreamKey,
+		},
+	})
 }

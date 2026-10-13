@@ -16,8 +16,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"streamforge/internal/logger"
 	"streamforge/internal/metadata"
@@ -107,11 +110,12 @@ func (w *Worker) Start() error {
 	}
 
 	// 1. Graceful Shutdown (WaitGroups & OS Signals)
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	go func() {
-		<-quit
-		logger.Log.Info("Received shutdown signal. Stopping AMQP consumer to gracefully shutdown...")
+		<-ctx.Done()
+		logger.Log.Info("Received shutdown signal. Stopping AMQP consumer and active jobs to gracefully shutdown...")
 		ch.Close() // Breaks the range msgs loop
 	}()
 
@@ -169,7 +173,7 @@ func (w *Worker) Start() error {
 				}
 			}
 
-			err := w.processJob(job)
+			err := w.processJob(ctx, job)
 			if err != nil {
 				log.Printf("Failed to process job for Video %d: %v\n", job.VideoID, err)
 				
@@ -197,7 +201,16 @@ func (w *Worker) Start() error {
 					delivery.Ack(false)
 				} else {
 					logger.Log.Error("Max retries reached, sending to DLX", zap.Uint("video_id", job.VideoID))
-					w.DB.Model(&models.Video{}).Where("id = ?", job.VideoID).Update("status", "Failed")
+					w.DB.Transaction(func(tx *gorm.DB) error {
+						var video models.Video
+						if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", job.VideoID).First(&video).Error; err != nil {
+							return err
+						}
+						if video.Status == "Processing" {
+							return tx.Model(&video).Update("status", "Failed").Error
+						}
+						return nil
+					})
 					delivery.Nack(false, false)
 					jobsFailedTotal.Inc()
 				}
@@ -215,18 +228,41 @@ func (w *Worker) Start() error {
 	return nil
 }
 
-func (w *Worker) processJob(job metadata.TranscodeJob) error {
-	w.DB.Model(&models.Video{}).Where("id = ?", job.VideoID).Update("status", "Processing")
+func (w *Worker) processJob(ctx context.Context, job metadata.TranscodeJob) error {
+	prefix := fmt.Sprintf("hls/%d_%d", job.VideoID, time.Now().Unix())
+	masterURL := fmt.Sprintf("s3://%s/%s/master.m3u8", w.S3.BucketName, prefix)
+
+	err := w.DB.Transaction(func(tx *gorm.DB) error {
+		var video models.Video
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", job.VideoID).First(&video).Error; err != nil {
+			return err
+		}
+		
+		if video.Status == "Live" || video.Status == "Uploaded" {
+			return tx.Model(&video).Updates(map[string]interface{}{
+				"status": "Processing",
+				"url":    masterURL,
+			}).Error
+		}
+		
+		logger.Log.Info("Ignoring transcode start due to invalid state", zap.String("status", video.Status), zap.Uint("video_id", job.VideoID))
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to acquire processing lock: %w", err)
+	}
 
 	var objectKey string
-	if strings.HasPrefix(job.URL, "s3://") {
-		parts := strings.SplitN(strings.TrimPrefix(job.URL, "s3://"), "/", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid s3 URL: %s", job.URL)
+	if job.Type != "Live" {
+		if strings.HasPrefix(job.URL, "s3://") {
+			parts := strings.SplitN(strings.TrimPrefix(job.URL, "s3://"), "/", 2)
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid s3 URL: %s", job.URL)
+			}
+			objectKey = parts[1]
+		} else {
+			return fmt.Errorf("unsupported URL format for transcode: %s", job.URL)
 		}
-		objectKey = parts[1]
-	} else {
-		return fmt.Errorf("unsupported URL format for transcode: %s", job.URL)
 	}
 
 	tempDir := fmt.Sprintf("/tmp/transcode/%d", job.VideoID)
@@ -234,40 +270,66 @@ func (w *Worker) processJob(job metadata.TranscodeJob) error {
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return err
 	}
+	for _, dir := range []string{"1080p", "720p", "480p", "360p"} {
+		os.MkdirAll(filepath.Join(tempDir, dir), 0755)
+	}
 	defer os.RemoveAll(tempDir)
 
-	inputPath := filepath.Join(tempDir, "input.mp4")
-	
-	logger.Log.Info("Downloading file from S3", zap.String("objectKey", objectKey))
-	dlCtx, dlCancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer dlCancel()
-	
-	if err := w.S3.DownloadFile(dlCtx, objectKey, inputPath); err != nil {
-		return err
+	var inputPath string
+	if job.Type == "Live" {
+		inputPath = strings.Replace(job.URL, "localhost", "mediamtx", 1)
+	} else {
+		inputPath = filepath.Join(tempDir, "input.mp4")
+		logger.Log.Info("Downloading file from S3", zap.String("objectKey", objectKey))
+		dlCtx, dlCancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer dlCancel()
+		
+		if err := w.S3.DownloadFile(dlCtx, objectKey, inputPath); err != nil {
+			return err
+		}
 	}
 
 	// 3. Rogue Process Timeouts (Context)
 	logger.Log.Info("Starting FFmpeg transcode...")
-	ffCtx, ffCancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	
+	var ffCtx context.Context
+	var ffCancel context.CancelFunc
+	if job.Type == "Live" {
+		ffCtx, ffCancel = context.WithCancel(ctx)
+	} else {
+		ffCtx, ffCancel = context.WithTimeout(ctx, 2*time.Hour)
+	}
 	defer ffCancel()
 
-	cmd := exec.CommandContext(ffCtx, "ffmpeg",
+	args := []string{
 		"-y",
 		"-i", inputPath,
-		"-map", "0:v:0", "-map", "0:a:0?", "-map", "0:v:0", "-map", "0:a:0?", "-map", "0:v:0", "-map", "0:a:0?", "-map", "0:v:0", "-map", "0:a:0?",
-		"-c:v", "libx264", "-preset", "fast", "-c:a", "aac",
+		"-map", "0:v:0", "-map", "0:a:0?", "-map", "0:v:0", "-map", "0:a:0?", "-map", "0:v:0", "-map", "0:a:0?",
+		"-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
 		"-b:v:0", "5000k", "-s:v:0", "1920x1080", "-profile:v:0", "main",
 		"-b:v:1", "2800k", "-s:v:1", "1280x720", "-profile:v:1", "main",
-		"-b:v:2", "1400k", "-s:v:2", "854x480", "-profile:v:2", "main",
-		"-b:v:3", "800k", "-s:v:3", "640x360", "-profile:v:3", "main",
+		"-b:v:2", "800k", "-s:v:2", "640x360", "-profile:v:2", "main",
 		"-g", "120",
 		"-f", "hls",
 		"-hls_time", "4",
-		"-hls_playlist_type", "vod",
+	}
+
+	if job.Type == "Live" {
+		args = append(args,
+			"-hls_list_size", "20",
+			"-hls_flags", "temp_file+delete_segments",
+		)
+	} else {
+		args = append(args, "-hls_playlist_type", "vod")
+	}
+
+	args = append(args,
 		"-master_pl_name", "master.m3u8",
-		"-var_stream_map", "v:0,a:0,name:1080p v:1,a:1,name:720p v:2,a:2,name:480p v:3,a:3,name:360p",
+		"-var_stream_map", "v:0,a:0,name:1080p v:1,a:1,name:720p v:2,a:2,name:360p",
 		filepath.Join(tempDir, "%v/playlist.m3u8"),
 	)
+	
+	cmd := exec.CommandContext(ffCtx, "ffmpeg", args...)
 	
 	// 4. Real-Time Progress Tracking (Channels)
 	stderr, err := cmd.StderrPipe()
@@ -291,6 +353,8 @@ func (w *Worker) processJob(job metadata.TranscodeJob) error {
 				case progressChan <- line:
 				default:
 				}
+			} else {
+				log.Println("FFmpeg:", line)
 			}
 		}
 		if err := scanner.Err(); err != nil {
@@ -324,36 +388,112 @@ func (w *Worker) processJob(job metadata.TranscodeJob) error {
 		}
 	}()
 
+	if job.Type == "Live" {
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			return err
+		}
+		defer watcher.Close()
+
+		filepath.Walk(tempDir, func(path string, info os.FileInfo, err error) error {
+			if err == nil && info.IsDir() {
+				watcher.Add(path)
+			}
+			return nil
+		})
+
+		go func() {
+			for {
+				select {
+				case event, ok := <-watcher.Events:
+					if !ok {
+						return
+					}
+					if event.Has(fsnotify.Create) {
+						info, err := os.Stat(event.Name)
+						if err == nil && info.IsDir() {
+							watcher.Add(event.Name)
+							continue
+						}
+					}
+					if event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) || event.Has(fsnotify.Write) {
+						if strings.HasSuffix(event.Name, ".tmp") {
+							continue
+						}
+						if strings.HasSuffix(event.Name, ".ts") || strings.HasSuffix(event.Name, ".m3u8") {
+							relPath, _ := filepath.Rel(tempDir, event.Name)
+							s3Key := fmt.Sprintf("%s/%s", prefix, filepath.ToSlash(relPath))
+							
+							// Run upload in a small closure to properly scope defer upCancel
+							func() {
+								upCtx, upCancel := context.WithTimeout(ctx, 10*time.Minute)
+								defer upCancel()
+								_ = w.S3.UploadFile(upCtx, s3Key, event.Name)
+							}()
+						}
+					}
+				case err, ok := <-watcher.Errors:
+					if !ok {
+						return
+					}
+					log.Printf("fsnotify error: %v", err)
+				}
+			}
+		}()
+	}
+
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("ffmpeg failed (timeout or error): %w", err)
 	}
 
-	log.Println("Uploading HLS files to MinIO...")
-	prefix := fmt.Sprintf("hls/%d_%d", job.VideoID, time.Now().Unix())
+	if ctx.Err() != nil {
+		return fmt.Errorf("worker shutting down, skipping final sweep")
+	}
+
+	log.Println("Uploading HLS files to MinIO (Final Sweep)...")
 	
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(20)
+
 	err = filepath.Walk(tempDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() || path == inputPath {
+		if info.IsDir() || path == inputPath || strings.HasSuffix(path, ".tmp") {
 			return nil
 		}
 
-		relPath, _ := filepath.Rel(tempDir, path)
-		s3Key := fmt.Sprintf("%s/%s", prefix, relPath)
+		currentPath := path
+		relPath, _ := filepath.Rel(tempDir, currentPath)
+		s3Key := fmt.Sprintf("%s/%s", prefix, filepath.ToSlash(relPath))
 		
-		upCtx, upCancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer upCancel()
-		return w.S3.UploadFile(upCtx, s3Key, path)
+		g.Go(func() error {
+			upCtx, upCancel := context.WithTimeout(gCtx, 10*time.Minute)
+			defer upCancel()
+			return w.S3.UploadFile(upCtx, s3Key, currentPath)
+		})
+		return nil
 	})
 	if err != nil {
 		return err
 	}
+	
+	if err := g.Wait(); err != nil {
+		return err
+	}
 
-	masterURL := fmt.Sprintf("s3://%s/%s/master.m3u8", w.S3.BucketName, prefix)
-	w.DB.Model(&models.Video{}).Where("id = ?", job.VideoID).Updates(map[string]interface{}{
-		"status": "Done",
-		"url":    masterURL,
+	w.DB.Transaction(func(tx *gorm.DB) error {
+		var video models.Video
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", job.VideoID).First(&video).Error; err != nil {
+			return err
+		}
+		if video.Status == "Processing" {
+			return tx.Model(&video).Updates(map[string]interface{}{
+				"status": "Done",
+				"url":    masterURL,
+			}).Error
+		}
+		return nil
 	})
 
 	return nil

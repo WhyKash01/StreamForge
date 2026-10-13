@@ -25,3 +25,6 @@ Thumbs.db
 # Logs
 *.log
 process_log.txt
+
+# Prep materials
+prep/

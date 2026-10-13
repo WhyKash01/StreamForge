@@ -35,7 +35,17 @@ func NewS3Service(endpoint, region, accessKey, secretKey, bucketName string) *S3
 		o.UsePathStyle = true // Required for MinIO
 	})
 
-	presignClient := s3.NewPresignClient(client)
+	// Create a separate client for presigning that uses the public endpoint
+	// This ensures the AWS Signature v4 is calculated with the correct Host header
+	publicEndpoint := os.Getenv("MINIO_PUBLIC_ENDPOINT")
+	if publicEndpoint == "" {
+		publicEndpoint = endpoint
+	}
+	presignClientBase := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(publicEndpoint)
+		o.UsePathStyle = true
+	})
+	presignClient := s3.NewPresignClient(presignClientBase)
 
 	s3svc := &S3Service{
 		Client:        client,

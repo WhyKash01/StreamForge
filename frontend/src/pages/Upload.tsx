@@ -9,6 +9,8 @@ export default function Upload() {
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [category, setCategory] = useState('');
+  const [tags, setTags] = useState('');
   
   const [uploadProgress, setUploadProgress] = useState(0);
   const [status, setStatus] = useState<'idle' | 'uploading' | 'processing' | 'success' | 'error'>('idle');
@@ -86,6 +88,8 @@ export default function Upload() {
         contentType: videoFile.type || 'video/mp4',
         hasThumbnail: !!thumbnailFile,
         thumbnailContentType: thumbnailFile ? thumbnailFile.type : '',
+        category,
+        tags,
       });
 
       const { videoId, videoPresignedUrl, thumbnailPresignedUrl } = initRes.data;
@@ -191,6 +195,37 @@ export default function Upload() {
                 className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-100 focus:outline-none focus:border-rose-500 transition-colors min-h-30 resize-y"
                 placeholder="Tell viewers about your video..."
               />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-zinc-400 mb-1">Category <span className="text-zinc-600 text-xs">(Optional)</span></label>
+                <select
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  disabled={status === 'uploading' || status === 'processing' || status === 'success'}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-100 focus:outline-none focus:border-rose-500 transition-colors appearance-none"
+                >
+                  <option value="">Select Category...</option>
+                  <option value="Gaming">Gaming</option>
+                  <option value="Just Chatting">Just Chatting</option>
+                  <option value="Music">Music</option>
+                  <option value="Education">Education</option>
+                  <option value="Technology">Technology</option>
+                  <option value="Entertainment">Entertainment</option>
+                  <option value="Sports">Sports</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-400 mb-1">Tags <span className="text-zinc-600 text-xs">(Optional)</span></label>
+                <input 
+                  type="text"
+                  value={tags}
+                  onChange={(e) => setTags(e.target.value)}
+                  disabled={status === 'uploading' || status === 'processing' || status === 'success'}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-100 focus:outline-none focus:border-rose-500 transition-colors"
+                  placeholder="e.g. gameplay, funny, tutorial"
+                />
+              </div>
             </div>
           </div>
           
