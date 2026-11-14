@@ -47,16 +47,21 @@ The platform is built as a **polyglot microservices system** — a Go backend ec
 
 | Feature | Description |
 |---|---|
-| 🔴 **Live Streaming** | RTMP ingest via OBS → sub-second WebRTC delivery to viewers |
+| 🔴 **Live Streaming** | RTMP ingest via OBS → sub-second WebRTC (WHEP) delivery to viewers with HLS fallback |
+| 💬 **Real-Time Live Chat** | WebSocket hub with Redis Pub/Sub cross-pod broadcast, rate limiting, and rolling history |
+| 👥 **Live Viewer Tracking** | Real-time concurrent live viewer tracking and automatic viewer count synchronization |
 | 🎥 **VOD Uploads** | Direct-to-S3 presigned URL uploads, bypassing the API for large files |
-| ⚡ **GPU Transcoding** | NVIDIA NVENC hardware encoding — 5–10× faster than CPU-only FFmpeg |
-| 📼 **Adaptive Bitrate** | HLS multi-rendition output (1080p, 720p) with `hls.js` player |
-| 🔐 **Auth & Security** | JWT access + refresh token system with secure cookie handling |
-| 💬 **Comments & Likes** | Thread-safe, atomic like/unlike operations via DB row-level locking |
-| 📊 **Observability** | Prometheus metrics on active jobs, queue depth, failures, and view counts |
-| 🔄 **Resiliency** | Dead Letter Exchanges (DLX), retry policies, and graceful worker shutdown |
-| 📡 **Channels & Subs** | User channels, subscriptions feed, and stream key management |
-| 🧩 **Stream Recording** | MediaMTX auto-records live streams to disk for VOD playback |
+| ⚡ **Adaptive Transcoding** | Hardware-aware FFmpeg encoding (NVIDIA NVENC with dynamic CPU libx264 fallback) |
+| 📼 **Adaptive Bitrate** | HLS multi-rendition output (1080p, 720p, 360p) with `hls.js` player & quality switcher |
+| 🖼️ **Auto-Thumbnailing** | Automatic video poster extraction at second 3 via FFmpeg if no custom thumbnail is uploaded |
+| ⏱️ **Metadata Extraction** | Accurate video duration and bitrate detection via `ffprobe` |
+| 🚀 **Redis View Buffering** | HyperLogLog 24h deduplication + atomic `GETSET` zero-loss write-behind batch flusher to PostgreSQL |
+| 🔐 **Auth & Security** | JWT access + refresh tokens with Redis Cache-Aside user profiling & rate limiting |
+| 💬 **Comments & Likes** | ACID row-level locking (`SELECT FOR UPDATE`) and atomic SQL expressions |
+| 🔍 **Feed Engine** | Database-level cursor/offset pagination, full-text search (`q=...`), and category filters |
+| 📊 **Observability** | Prometheus metrics on active jobs, queue depth, HTTP latencies + Grafana dashboards |
+| 🔄 **Resiliency** | Dead Letter Exchanges (DLX), exponential backoff retry policies, and graceful worker shutdown |
+| 🗄️ **Versioned Migrations** | Clean SQL migration files (`.up.sql` / `.down.sql`) and GitHub Actions CI pipeline |
 
 ---
 
@@ -437,8 +442,7 @@ StreamForge/
 │   └── nginx.conf              # Reverse proxy config
 │
 ├── mediamtx.yml                # MediaMTX server config
-├── prometheus.yml              # Prometheus scrape config
-├── docker-compose.yml          # Full service orchestration
+├── docker-compose.yml          # Core microservice orchestration
 └── .env                        # Environment variables
 ```
 

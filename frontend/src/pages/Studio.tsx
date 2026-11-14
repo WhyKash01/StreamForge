@@ -7,8 +7,12 @@ import type { RootState } from '../store/store';
 import { updateUserProfileApi, uploadImageToS3 } from '../api/services';
 import { updateUserProfile } from '../store/slices/authSlice';
 
-export default function Studio() {
-  const [activeTab, setActiveTab] = useState<'upload' | 'customization' | 'live'>('upload');
+interface StudioProps {
+  initialTab?: 'upload' | 'customization' | 'live';
+}
+
+export default function Studio({ initialTab = 'upload' }: StudioProps = {}) {
+  const [activeTab, setActiveTab] = useState<'upload' | 'customization' | 'live'>(initialTab);
 
   return (
     <div className="flex h-[calc(100vh-8rem)]">

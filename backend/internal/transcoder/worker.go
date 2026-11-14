@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -47,6 +48,23 @@ var (
 		Help: "The total number of failed transcoder jobs",
 	})
 )
+
+var (
+	nvencCheckOnce   sync.Once
+	isNvencSupported bool
+)
+
+// isHardwareNVENCSupported detects whether NVIDIA NVENC hardware acceleration is present
+func isHardwareNVENCSupported() bool {
+	nvencCheckOnce.Do(func() {
+		cmd := exec.Command("ffmpeg", "-encoders")
+		out, err := cmd.Output()
+		if err == nil && strings.Contains(string(out), "h264_nvenc") {
+			isNvencSupported = true
+		}
+	})
+	return isNvencSupported
+}
 
 type Worker struct {
 	DB   *gorm.DB
@@ -276,6 +294,9 @@ func (w *Worker) processJob(ctx context.Context, job metadata.TranscodeJob) erro
 	defer os.RemoveAll(tempDir)
 
 	var inputPath string
+	var durationSeconds int = 0
+	var generatedThumbURL string
+
 	if job.Type == "Live" {
 		inputPath = strings.Replace(job.URL, "localhost", "mediamtx", 1)
 	} else {
@@ -287,9 +308,51 @@ func (w *Worker) processJob(ctx context.Context, job metadata.TranscodeJob) erro
 		if err := w.S3.DownloadFile(dlCtx, objectKey, inputPath); err != nil {
 			return err
 		}
+
+		// 1. Extract true video duration via ffprobe
+		probeCmd := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", inputPath)
+		if out, err := probeCmd.Output(); err == nil {
+			rawDuration := strings.TrimSpace(string(out))
+			if secFloat, err := strconv.ParseFloat(rawDuration, 64); err == nil {
+				durationSeconds = int(secFloat)
+				logger.Log.Info("Extracted video duration via ffprobe", zap.Uint("video_id", job.VideoID), zap.Int("duration_seconds", durationSeconds))
+			}
+		}
+
+		// 2. Generate fallback poster thumbnail from frame at 3 seconds if needed
+		var currentVideo models.Video
+		if err := w.DB.Select("thumbnail_url", "user_id").First(&currentVideo, job.VideoID).Error; err == nil {
+			needsThumb := currentVideo.ThumbnailURL == "" || strings.Contains(currentVideo.ThumbnailURL, "unsplash.com") || strings.Contains(currentVideo.ThumbnailURL, "default_")
+			if needsThumb {
+				seekTime := "00:00:03"
+				if durationSeconds > 0 && durationSeconds < 3 {
+					seekTime = "00:00:01"
+				}
+				autoThumbPath := filepath.Join(tempDir, "auto_thumb.jpg")
+				thumbCmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-ss", seekTime, "-i", inputPath, "-vframes", "1", "-q:v", "2", autoThumbPath)
+				if err := thumbCmd.Run(); err == nil {
+					thumbKey := fmt.Sprintf("thumbnails/%d/%d_auto.jpg", currentVideo.UserID, job.VideoID)
+					if err := w.S3.UploadFile(ctx, thumbKey, autoThumbPath); err == nil {
+						generatedThumbURL = fmt.Sprintf("http://localhost:9000/%s/%s", w.S3.BucketName, thumbKey)
+						logger.Log.Info("Generated auto-thumbnail from video frame", zap.Uint("video_id", job.VideoID), zap.String("url", generatedThumbURL))
+					}
+				}
+			}
+		}
 	}
 
-	// 3. Rogue Process Timeouts (Context)
+	// 3. Hardware-Aware Codec Selection
+	encoder := "libx264"
+	preset := "ultrafast"
+	if isHardwareNVENCSupported() {
+		encoder = "h264_nvenc"
+		preset = "p4"
+		logger.Log.Info("Hardware acceleration active: using h264_nvenc", zap.Uint("video_id", job.VideoID))
+	} else {
+		logger.Log.Info("Hardware acceleration unavailable: using CPU libx264", zap.Uint("video_id", job.VideoID))
+	}
+
+	// 4. Rogue Process Timeouts (Context)
 	logger.Log.Info("Starting FFmpeg transcode...")
 	
 	var ffCtx context.Context
@@ -305,10 +368,10 @@ func (w *Worker) processJob(ctx context.Context, job metadata.TranscodeJob) erro
 		"-y",
 		"-i", inputPath,
 		"-map", "0:v:0", "-map", "0:a:0?", "-map", "0:v:0", "-map", "0:a:0?", "-map", "0:v:0", "-map", "0:a:0?",
-		"-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
-		"-b:v:0", "5000k", "-s:v:0", "1920x1080", "-profile:v:0", "main",
-		"-b:v:1", "2800k", "-s:v:1", "1280x720", "-profile:v:1", "main",
-		"-b:v:2", "800k", "-s:v:2", "640x360", "-profile:v:2", "main",
+		"-c:v", encoder, "-preset", preset, "-c:a", "aac",
+		"-b:v:0", "5000k", "-s:v:0", "1920x1080",
+		"-b:v:1", "2800k", "-s:v:1", "1280x720",
+		"-b:v:2", "800k", "-s:v:2", "640x360",
 		"-g", "120",
 		"-f", "hls",
 		"-hls_time", "4",
@@ -482,16 +545,27 @@ func (w *Worker) processJob(ctx context.Context, job metadata.TranscodeJob) erro
 		return err
 	}
 
+	updates := map[string]interface{}{
+		"status": "Done",
+		"url":    masterURL,
+	}
+	if job.Type == "VOD" {
+		updates["type"] = "VOD"
+	}
+	if durationSeconds > 0 {
+		updates["duration"] = durationSeconds
+	}
+	if generatedThumbURL != "" {
+		updates["thumbnail_url"] = generatedThumbURL
+	}
+
 	w.DB.Transaction(func(tx *gorm.DB) error {
 		var video models.Video
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", job.VideoID).First(&video).Error; err != nil {
 			return err
 		}
 		if video.Status == "Processing" {
-			return tx.Model(&video).Updates(map[string]interface{}{
-				"status": "Done",
-				"url":    masterURL,
-			}).Error
+			return tx.Model(&video).Updates(updates).Error
 		}
 		return nil
 	})

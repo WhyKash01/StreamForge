@@ -74,7 +74,7 @@ func main() {
 
 	handler := metadata.NewHandler(db, s3Service, rdb)
 
-	webhookHandler, err := metadata.NewWebhookHandler(db, rabbitURL)
+	webhookHandler, err := metadata.NewWebhookHandler(db, rabbitURL, rdb)
 	if err != nil {
 		logger.Log.Fatal("Failed to initialize webhook handler", zap.Error(err))
 	}

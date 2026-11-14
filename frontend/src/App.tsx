@@ -11,6 +11,7 @@ import Studio from './pages/Studio';
 import Live from './pages/Live';
 import Channel from './pages/Channel';
 import Subscriptions from './pages/Subscriptions';
+import NotFound from './pages/NotFound';
 import api from './api/axios';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
@@ -42,19 +43,21 @@ function App() {
       <Navbar onMenuClick={() => setIsSidebarOpen(!isSidebarOpen)} />
       
       <div className="flex flex-1 pt-16">
-        <Sidebar isOpen={isSidebarOpen} />
+        <Sidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
         
-        <main className={`flex-1 transition-all duration-300 ${isSidebarOpen ? 'ml-60' : 'ml-0 sm:ml-20'}`}>
+        <main className={`flex-1 transition-all duration-300 ${isSidebarOpen ? 'ml-0 md:ml-60' : 'ml-0 sm:ml-20'}`}>
           <div className="p-4 sm:p-6 max-w-screen-2xl mx-auto">
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/video/:id" element={<Video />} />
               <Route path="/live" element={<Live />} />
               <Route path="/studio" element={<Studio />} />
+              <Route path="/upload" element={<Studio initialTab="upload" />} />
               <Route path="/login" element={<Login />} />
               <Route path="/register" element={<Register />} />
               <Route path="/channel/:username" element={<Channel />} />
               <Route path="/subscriptions" element={<Subscriptions />} />
+              <Route path="*" element={<NotFound />} />
             </Routes>
           </div>
         </main>

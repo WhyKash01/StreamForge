@@ -1,23 +1,49 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
-import { Play, Pause, Volume2, VolumeX, Maximize, Settings, Check, FastForward } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, Maximize, Settings, Check, FastForward, Tv, PictureInPicture2 } from 'lucide-react';
 
 export type PlayerMode = 'live' | 'vod' | 'ended';
 export type PlayerState = 'waiting' | 'loading' | 'playing' | 'paused' | 'ended' | 'error';
 
 interface VideoPlayerProps {
   src: string;
+  whepUrl?: string;
   mode: PlayerMode;
   autoPlay?: boolean;
   wasLive?: boolean;
+  isTheater?: boolean;
+  onToggleTheater?: () => void;
   onEnded?: () => void;
   onError?: (error: string) => void;
 }
 
-export default function VideoPlayer({ src, mode, autoPlay = true, wasLive, onEnded, onError }: VideoPlayerProps) {
+export default function VideoPlayer({ 
+  src, 
+  whepUrl, 
+  mode, 
+  autoPlay = true, 
+  wasLive, 
+  isTheater,
+  onToggleTheater,
+  onEnded, 
+  onError 
+}: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+
+  // Streaming Protocol Mode (WebRTC for sub-second live, HLS for adaptive/fallback)
+  const [activeProtocol, setActiveProtocol] = useState<'webrtc' | 'hls'>(mode === 'live' && whepUrl ? 'webrtc' : 'hls');
+
+  // Update activeProtocol if whepUrl becomes available
+  useEffect(() => {
+    if (mode === 'live' && whepUrl) {
+      setActiveProtocol('webrtc');
+    } else {
+      setActiveProtocol('hls');
+    }
+  }, [mode, whepUrl]);
   
   // Timers
   const retryTimeoutRef = useRef<number | null>(null);
@@ -50,9 +76,87 @@ export default function VideoPlayer({ src, mode, autoPlay = true, wasLive, onEnd
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
+  // --- WebRTC (WHEP) Initialization for Sub-Second Live Streaming ---
+  useEffect(() => {
+    if (activeProtocol !== 'webrtc' || !whepUrl || mode !== 'live' || !videoRef.current) return;
+    const video = videoRef.current;
+    let isDestroyed = false;
+
+    const initWhep = async () => {
+      try {
+        setPlayerState('loading');
+        if (pcRef.current) {
+          pcRef.current.close();
+          pcRef.current = null;
+        }
+
+        const pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        });
+        pcRef.current = pc;
+
+        pc.addTransceiver('video', { direction: 'recvonly' });
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+
+        pc.ontrack = (event) => {
+          if (!isDestroyed && video) {
+            video.srcObject = event.streams[0];
+            attemptPlay();
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          if (pc.connectionState === 'connected') {
+            setPlayerState('playing');
+          } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+            console.warn('[VideoPlayer] WebRTC connection failed/dropped, falling back to HLS');
+            if (onError) onError('WebRTC connection dropped');
+            if (!isDestroyed) setActiveProtocol('hls');
+          }
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        const res = await fetch(whepUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/sdp' },
+          body: offer.sdp,
+        });
+
+        if (!res.ok) {
+          throw new Error(`WHEP endpoint returned ${res.status}`);
+        }
+
+        const answerSdp = await res.text();
+        if (!isDestroyed && pc.signalingState !== 'closed') {
+          await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+        }
+      } catch (err) {
+        console.warn('[VideoPlayer] WebRTC WHEP connection error, falling back to HLS:', err);
+        if (!isDestroyed) {
+          setActiveProtocol('hls');
+        }
+      }
+    };
+
+    initWhep();
+
+    return () => {
+      isDestroyed = true;
+      if (pcRef.current) {
+        pcRef.current.close();
+        pcRef.current = null;
+      }
+      if (video) {
+        video.srcObject = null;
+      }
+    };
+  }, [activeProtocol, whepUrl, mode]);
+
   // --- HLS & Network Initialization ---
   useEffect(() => {
-    if (!src || !videoRef.current) return;
+    if (activeProtocol !== 'hls' || !src || !videoRef.current) return;
     const video = videoRef.current;
     let retryDelay = 2000;
     let isDestroyed = false;
@@ -107,8 +211,8 @@ export default function VideoPlayer({ src, mode, autoPlay = true, wasLive, onEnd
                   }, retryDelay);
                 } else {
                   // Mid-stream stall. HLS.js will natively attempt to recover and reconnect.
-                  // We do not manually declare the stream 'ended' here because the parent 
-                  // component is polling the backend API for the true stream status.
+                  // Notify parent to trigger status polling in case broadcast ended.
+                  if (onError) onError('Live stream stalled');
                 }
               }
             } else {
@@ -132,7 +236,7 @@ export default function VideoPlayer({ src, mode, autoPlay = true, wasLive, onEnd
       if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
       if (liveSyncIntervalRef.current) clearInterval(liveSyncIntervalRef.current);
     };
-  }, [src, mode, autoPlay, onError, onEnded]);
+  }, [activeProtocol, src, mode, autoPlay, onError, onEnded]);
 
   // --- Autoplay Policy ---
   const attemptPlay = async () => {
@@ -299,6 +403,19 @@ export default function VideoPlayer({ src, mode, autoPlay = true, wasLive, onEnd
     }
   };
 
+  const togglePiP = async () => {
+    if (!videoRef.current) return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (document.pictureInPictureEnabled) {
+        await videoRef.current.requestPictureInPicture();
+      }
+    } catch (err) {
+      console.error("Picture-in-Picture error:", err);
+    }
+  };
+
   // --- Keyboard & Mouse Inactivity ---
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -309,6 +426,8 @@ export default function VideoPlayer({ src, mode, autoPlay = true, wasLive, onEnd
       
       switch(e.key) {
         case ' ':
+        case 'k':
+        case 'K':
           e.preventDefault();
           togglePlay();
           break;
@@ -322,16 +441,69 @@ export default function VideoPlayer({ src, mode, autoPlay = true, wasLive, onEnd
           e.preventDefault();
           toggleFullscreen();
           break;
+        case 't':
+        case 'T':
+          if (onToggleTheater) {
+            e.preventDefault();
+            onToggleTheater();
+          }
+          break;
+        case 'j':
+        case 'J':
+          if (videoRef.current) {
+            e.preventDefault();
+            videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 10);
+            setCurrentTime(videoRef.current.currentTime);
+          }
+          break;
+        case 'l':
+        case 'L':
+          if (videoRef.current) {
+            e.preventDefault();
+            videoRef.current.currentTime = Math.min(videoRef.current.duration || Infinity, videoRef.current.currentTime + 10);
+            setCurrentTime(videoRef.current.currentTime);
+          }
+          break;
         case 'ArrowRight':
           if (videoRef.current) {
             e.preventDefault();
-            videoRef.current.currentTime = Math.min(videoRef.current.duration, videoRef.current.currentTime + 5);
+            videoRef.current.currentTime = Math.min(videoRef.current.duration || Infinity, videoRef.current.currentTime + 5);
+            setCurrentTime(videoRef.current.currentTime);
           }
           break;
         case 'ArrowLeft':
           if (videoRef.current) {
             e.preventDefault();
             videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 5);
+            setCurrentTime(videoRef.current.currentTime);
+          }
+          break;
+        case 'ArrowUp':
+          if (videoRef.current) {
+            e.preventDefault();
+            const newVol = Math.min(1, Number((volume + 0.1).toFixed(2)));
+            setVolume(newVol);
+            videoRef.current.volume = newVol;
+            if (isMuted) {
+              setIsMuted(false);
+              videoRef.current.muted = false;
+            }
+          }
+          break;
+        case 'ArrowDown':
+          if (videoRef.current) {
+            e.preventDefault();
+            const newVol = Math.max(0, Number((volume - 0.1).toFixed(2)));
+            setVolume(newVol);
+            videoRef.current.volume = newVol;
+          }
+          break;
+        default:
+          if (/^[0-9]$/.test(e.key) && mode === 'vod' && duration > 0 && videoRef.current) {
+            e.preventDefault();
+            const target = (parseInt(e.key, 10) / 10) * duration;
+            videoRef.current.currentTime = target;
+            setCurrentTime(target);
           }
           break;
       }
@@ -339,7 +511,7 @@ export default function VideoPlayer({ src, mode, autoPlay = true, wasLive, onEnd
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [mode]);
+  }, [mode, duration, volume, isMuted, onToggleTheater]);
 
   const handleMouseMove = () => {
     setShowControls(true);
@@ -464,17 +636,49 @@ export default function VideoPlayer({ src, mode, autoPlay = true, wasLive, onEnd
               <span className="text-zinc-200">{formatTime(currentTime)} <span className="text-zinc-500 font-normal mx-1">/</span> {formatTime(duration)}</span>
               
               {mode === 'live' && (
-                <button 
-                  onClick={isFallingBehind ? jumpToLive : undefined}
-                  className={`flex items-center gap-1.5 text-xs font-bold tracking-widest uppercase transition-colors px-2 py-1 rounded-full ${isFallingBehind ? 'text-zinc-400 hover:bg-white/10 cursor-pointer' : 'text-rose-500 cursor-default'}`}
-                >
-                  {isFallingBehind ? (
-                    <FastForward className="w-3.5 h-3.5" />
-                  ) : (
-                    <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
-                  )}
-                  LIVE
-                </button>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={isFallingBehind ? jumpToLive : undefined}
+                    className={`flex items-center gap-1.5 text-xs font-bold tracking-widest uppercase transition-colors px-2 py-1 rounded-full ${isFallingBehind ? 'text-zinc-400 hover:bg-white/10 cursor-pointer' : 'text-rose-500 cursor-default'}`}
+                  >
+                    {isFallingBehind ? (
+                      <FastForward className="w-3.5 h-3.5" />
+                    ) : (
+                      <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+                    )}
+                    LIVE
+                  </button>
+
+                  <div className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-0.5 rounded-full border border-zinc-700/80 bg-zinc-900/90 shadow-sm">
+                    {activeProtocol === 'webrtc' ? (
+                      <>
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span className="text-emerald-400 font-bold">⚡ WebRTC (&lt;500ms)</span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setActiveProtocol('hls'); }}
+                          className="text-zinc-400 hover:text-zinc-200 text-[10px] ml-1 underline cursor-pointer"
+                          title="Switch to HLS adaptive"
+                        >
+                          HLS
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                        <span className="text-zinc-300">📼 HLS</span>
+                        {whepUrl && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setActiveProtocol('webrtc'); }}
+                            className="text-emerald-400 hover:text-emerald-300 text-[10px] ml-1 font-bold underline cursor-pointer"
+                            title="Switch to ultra-low latency WebRTC"
+                          >
+                            ⚡ WebRTC
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
               )}
               {mode === 'ended' && (
                 <div className="flex items-center gap-1.5 text-xs font-bold tracking-widest uppercase text-zinc-500 px-2 py-1">
@@ -535,8 +739,32 @@ export default function VideoPlayer({ src, mode, autoPlay = true, wasLive, onEnd
               </div>
             )}
 
+            {/* Theater Mode */}
+            {onToggleTheater && (
+              <button 
+                onClick={onToggleTheater} 
+                className={`p-2 min-w-11 min-h-11 flex items-center justify-center transition-colors cursor-pointer ${
+                  isTheater ? 'text-rose-500' : 'text-white hover:text-rose-400'
+                }`}
+                title={isTheater ? "Default view (t)" : "Theater mode (t)"}
+              >
+                <Tv className="w-5 h-5" />
+              </button>
+            )}
+
+            {/* Picture-in-Picture */}
+            {typeof document !== 'undefined' && 'pictureInPictureEnabled' in document && document.pictureInPictureEnabled && (
+              <button 
+                onClick={togglePiP} 
+                className="text-white hover:text-rose-400 p-2 min-w-11 min-h-11 flex items-center justify-center transition-colors cursor-pointer"
+                title="Picture in Picture"
+              >
+                <PictureInPicture2 className="w-5 h-5" />
+              </button>
+            )}
+
             {/* Fullscreen */}
-            <button onClick={toggleFullscreen} className="text-white hover:text-rose-400 p-2 min-w-11 min-h-11 flex items-center justify-center transition-colors">
+            <button onClick={toggleFullscreen} className="text-white hover:text-rose-400 p-2 min-w-11 min-h-11 flex items-center justify-center transition-colors cursor-pointer" title="Fullscreen (f)">
               <Maximize className="w-5 h-5" />
             </button>
           </div>

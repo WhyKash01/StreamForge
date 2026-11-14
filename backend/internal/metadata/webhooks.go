@@ -15,18 +15,20 @@ import (
 
 	"github.com/gin-gonic/gin"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 type WebhookHandler struct {
 	DB    *gorm.DB
+	Redis *redis.Client
 	AMQP  *amqp.Connection
 	Chan  *amqp.Channel
 	Queue amqp.Queue
 }
 
-func NewWebhookHandler(db *gorm.DB, rabbitURL string) (*WebhookHandler, error) {
+func NewWebhookHandler(db *gorm.DB, rabbitURL string, rdb *redis.Client) (*WebhookHandler, error) {
 	conn, err := amqp.Dial(rabbitURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
@@ -64,6 +66,7 @@ func NewWebhookHandler(db *gorm.DB, rabbitURL string) (*WebhookHandler, error) {
 
 	return &WebhookHandler{
 		DB:    db,
+		Redis: rdb,
 		AMQP:  conn,
 		Chan:  ch,
 		Queue: q,
@@ -168,14 +171,25 @@ func (h *WebhookHandler) HandleLiveWebhook(c *gin.Context) {
 			log.Printf("Failed to push Live TranscodeJob to RabbitMQ: %v", err)
 		}
 	case "publishDone":
-		// Stream Ended (currently uploading to S3)
+		// Stream Ended (currently uploading recording to S3)
+		var targetVid models.Video
 		h.DB.Transaction(func(tx *gorm.DB) error {
-			return tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-				Model(&models.Video{}).
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 				Where("url = ? AND type = ?", streamURL, "Live").
 				Where("status IN ?", []string{"Live", "Processing"}).
-				Update("status", "Uploading").Error
+				First(&targetVid).Error; err == nil {
+				return tx.Model(&targetVid).Update("status", "Uploading").Error
+			}
+			return nil
 		})
+
+		// Invalidate cached live stream playback & feed in Redis
+		if h.Redis != nil {
+			if targetVid.ID > 0 {
+				_ = h.Redis.Del(context.Background(), fmt.Sprintf("video:playback:%d", targetVid.ID))
+			}
+			_ = h.Redis.Del(context.Background(), "videos:feed")
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "received"})
@@ -249,9 +263,10 @@ func (h *WebhookHandler) HandleVODWebhook(c *gin.Context) {
 					morphedLive := false
 
 					if isLiveRecording {
-						// Find the original Live video record that is currently "Uploading"
+						// Find the original Live video record that is currently "Uploading", "Live", or "Processing"
 						var liveVideo models.Video
-						if err := tx.Where("user_id = ? AND type = ?", userID, "Live").Order("created_at desc").First(&liveVideo).Error; err == nil {
+						if err := tx.Where("user_id = ? AND (type = 'Live' OR status IN ('Uploading', 'Live', 'Processing'))", userID).
+							Order("created_at desc").First(&liveVideo).Error; err == nil {
 							// Morph this existing Live record into the final VOD!
 							title := liveVideo.Title
 							if !strings.HasSuffix(title, " (VOD)") {
@@ -262,10 +277,21 @@ func (h *WebhookHandler) HandleVODWebhook(c *gin.Context) {
 								"url":    vodURL,
 								"status": "Uploaded",
 								"title":  title,
+								"type":   "VOD",
 							})
 							
+							liveVideo.Type = "VOD"
+							liveVideo.Status = "Uploaded"
+							liveVideo.URL = vodURL
+							liveVideo.Title = title
 							video = liveVideo
 							morphedLive = true
+
+							// Invalidate Redis cache so stale Live playback details are evicted
+							if h.Redis != nil {
+								_ = h.Redis.Del(context.Background(), fmt.Sprintf("video:playback:%d", liveVideo.ID))
+								_ = h.Redis.Del(context.Background(), "videos:feed")
+							}
 						}
 					}
 

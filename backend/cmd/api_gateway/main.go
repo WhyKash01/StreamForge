@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"streamforge/internal/auth"
+	"streamforge/internal/chat"
 	"streamforge/internal/comments"
 	"streamforge/internal/live"
 	"streamforge/internal/metadata"
@@ -13,6 +14,7 @@ import (
 	"streamforge/internal/models"
 	"streamforge/internal/upload"
 	"streamforge/internal/videos"
+	"streamforge/internal/views"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -62,9 +64,20 @@ func main() {
 	var rdb *redis.Client
 	if err == nil {
 		rdb = redis.NewClient(opt)
+		logger.Log.Info("Connected to Redis successfully")
 	} else {
 		logger.Log.Warn("Failed to parse REDIS_URL, running without cache", zap.Error(err))
 	}
+
+	// Start Background View Flusher (write-behind buffer to PostgreSQL)
+	viewFlusher := views.NewFlusher(db, rdb, 15*time.Second)
+	viewFlusher.Start()
+	defer viewFlusher.Stop()
+
+	// Initialize WebSocket Live Chat Hub
+	chatHub := chat.NewHub(rdb)
+	go chatHub.Run()
+	defer chatHub.Stop()
 
 	r := gin.Default()
 	r.Use(middleware.PrometheusMetrics())
@@ -77,9 +90,9 @@ func main() {
 		AllowCredentials: true,
 	}))
 
-	// Middlewares
-	authMiddleware := middleware.RequireAuth(db)
-	optionalAuthMiddleware := middleware.OptionalAuth(db)
+	// Middlewares (Optimized with Redis Cache-Aside for stateless JWT auth)
+	authMiddleware := middleware.RequireAuth(db, rdb)
+	optionalAuthMiddleware := middleware.OptionalAuth(db, rdb)
 
 	// Initialize Handlers
 	authHandler := auth.NewHandler(db)
@@ -127,7 +140,11 @@ func main() {
 	r.POST("/api/live/settings", authMiddleware, uploadHandler.HandleLiveSettings)
 	r.GET("/api/live/status", authMiddleware, uploadHandler.GetLiveStatus)
 
-	// Metadata Routes
+	// Live Chat WebSocket (supports real-time chat & concurrent viewer counts)
+	chatHandler := chat.NewHandler(chatHub, db, rdb)
+	r.GET("/api/live/:id/ws", chatHandler.ServeWS)
+
+	// Metadata Routes (Cache-Aside + Singleflight protected)
 	metadataHandler := metadata.NewHandler(db, s3Service, rdb)
 	r.GET("/api/metadata/videos", metadataHandler.ListVideos)
 	r.GET("/api/metadata/videos/:id/play", metadataHandler.GetVideoPlayback)
@@ -141,14 +158,14 @@ func main() {
 	r.PUT("/api/users/me", authMiddleware, metadataHandler.UpdateUser)
 	r.PUT("/api/videos/:id", authMiddleware, metadataHandler.UpdateVideo)
 
-	// Comments & Likes Routes
+	// Comments & Likes Routes (ACID protected with row-level locks)
 	commentsHandler := comments.NewHandler(db)
 	r.GET("/api/videos/:id/comments", commentsHandler.GetCommentsByVideo)
 	r.POST("/api/videos/:id/comments", authMiddleware, commentsHandler.CreateComment)
 	r.DELETE("/api/comments/:id", authMiddleware, commentsHandler.DeleteComment)
 	r.POST("/api/comments/:id/like", authMiddleware, commentsHandler.ToggleLikeComment)
 
-	videosHandler := videos.NewHandler(db)
+	videosHandler := videos.NewHandler(db, rdb)
 	r.POST("/api/videos/:id/like", authMiddleware, videosHandler.ToggleLikeVideo)
 	r.POST("/api/videos/:id/dislike", authMiddleware, videosHandler.ToggleDislikeVideo)
 	r.GET("/api/videos/:id/like_status", optionalAuthMiddleware, videosHandler.GetVideoLikeStatus)

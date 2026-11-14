@@ -14,8 +14,16 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy volatile-lfu
+      --appendonly yes
+      --appendfsync everysec
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
     restart: unless-stopped
   
   minio:
@@ -94,37 +102,19 @@ services:
               count: 1
               capabilities: [gpu]
 
-#  prometheus:
-#    image: prom/prometheus:latest
-#    ports:
-#      - "9090:9090"
-#    volumes:
-#      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-#    restart: unless-stopped
-#    extra_hosts:
-#      - "host.docker.internal:host-gateway"
-#
-#  grafana:
-#    image: grafana/grafana:latest
-#    ports:
-#      - "3000:3000"
-#    environment:
-#      - GF_SECURITY_ADMIN_PASSWORD=admin
-#    depends_on:
-#      - prometheus
-#    restart: unless-stopped
-
   api_gateway:
     build:
       context: ./backend
       dockerfile: Dockerfile.api
     environment:
       - DB_HOST=db
+      - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=http://minio:9000
       - MINIO_PUBLIC_ENDPOINT=http://localhost:9000
       - FRONTEND_URL=http://localhost
     depends_on:
       - db
+      - redis
       - minio
     volumes:
       - ./recordings:/recordings
@@ -140,11 +130,14 @@ services:
       dockerfile: Dockerfile.metadata
     environment:
       - DB_HOST=db
+      - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=http://minio:9000
       - MINIO_PUBLIC_ENDPOINT=http://localhost:9000
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - TRANSCODER_HEALTH_URL=http://transcoder:8082/health
     depends_on:
       - db
+      - redis
       - rabbitmq
     restart: unless-stopped
     networks:
@@ -175,12 +168,7 @@ services:
       - frontend
     restart: unless-stopped
 
-  adminer:
-    image: adminer
-    restart: unless-stopped
-    ports:
-      - "8082:8080"
-
 volumes:
   pgdata:
   minio_data:
+  redis_data:

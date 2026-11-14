@@ -57,14 +57,22 @@ func (h *WebhookHandler) HandleMediaMTXWebhook(c *gin.Context) {
 }
 
 func (h *WebhookHandler) processRecording(streamPath string) {
-	recordingsDir := "../recordings"
-	maxRetries := 5
+	recordingsDir := os.Getenv("RECORDINGS_DIR")
+	if recordingsDir == "" {
+		if _, err := os.Stat("/recordings"); err == nil {
+			recordingsDir = "/recordings"
+		} else if _, err := os.Stat("./recordings"); err == nil {
+			recordingsDir = "./recordings"
+		} else {
+			recordingsDir = "../recordings"
+		}
+	}
+	maxRetries := 8
 	
 	fLog, _ := os.OpenFile("process_log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	defer fLog.Close()
-	fLog.WriteString(fmt.Sprintf("processRecording started for %s\n", streamPath))
+	fLog.WriteString(fmt.Sprintf("processRecording started for %s in dir %s\n", streamPath, recordingsDir))
 
-	
 	segments := strings.Split(streamPath, "/")
 	streamKey := segments[len(segments)-1]
 	
@@ -85,7 +93,7 @@ func (h *WebhookHandler) processRecording(streamPath string) {
 			fLog.WriteString(fmt.Sprintf("Checking %s, isDir=%v\n", path, d.IsDir()))
 			if !d.IsDir() && strings.Contains(path, streamKey) && strings.HasSuffix(d.Name(), ".mp4") {
 				info, err := d.Info()
-				if err == nil {
+				if err == nil && info.Size() > 0 {
 					if info.ModTime().UnixNano() > newestModTime {
 						newestModTime = info.ModTime().UnixNano()
 						newestFile = path

@@ -27,8 +27,9 @@ export default function Navbar({ onMenuClick }: { onMenuClick: () => void }) {
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (searchQuery.trim()) {
-      // Future: Navigate to search results
-      console.log('Searching for:', searchQuery);
+      navigate(`/?q=${encodeURIComponent(searchQuery.trim())}`);
+    } else {
+      navigate('/');
     }
   };
 

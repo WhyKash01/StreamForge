@@ -1,0 +1,71 @@
+name: StreamForge CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  backend-ci:
+    name: Backend Test & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: backend/go.sum
+
+      - name: Verify Backend Dependencies
+        working-directory: ./backend
+        run: go mod verify
+
+      - name: Run Backend Unit Tests with Race Detector
+        working-directory: ./backend
+        run: go test -v -race ./...
+
+      - name: Compile Backend Microservices
+        working-directory: ./backend
+        run: |
+          go build -v ./cmd/api_gateway
+          go build -v ./cmd/metadata_service
+          go build -v ./cmd/transcoder
+
+  frontend-ci:
+    name: Frontend Typecheck & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Frontend Dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Build React SPA (Typecheck & Vite Bundle)
+        working-directory: ./frontend
+        run: npm run build
+
+  compose-validation:
+    name: Docker Compose Syntax Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose Configuration
+        run: docker compose config
