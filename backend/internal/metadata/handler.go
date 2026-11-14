@@ -148,6 +148,7 @@ func (h *Handler) GetChannel(c *gin.Context) {
 			"videos":          user.Videos,
 			"is_subscribed":   isSubscribed,
 		},
+		"is_subscribed": isSubscribed,
 	}
 
 	// Cache public profile in Redis for 5 minutes
@@ -202,6 +203,7 @@ func (h *Handler) ToggleSubscription(c *gin.Context) {
 		return
 	}
 
+	var isSubscribed bool
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		var sub models.Subscription
 		err := tx.Where("subscriber_id = ? AND channel_id = ?", subscriberID, channelID).First(&sub).Error
@@ -221,6 +223,7 @@ func (h *Handler) ToggleSubscription(c *gin.Context) {
 			if err := tx.Model(&models.User{}).Where("id = ?", subscriberID).UpdateColumn("following_count", gorm.Expr("following_count + ?", 1)).Error; err != nil {
 				return err
 			}
+			isSubscribed = true
 		} else {
 			// Unsubscribe
 			if err := tx.Delete(&sub).Error; err != nil {
@@ -232,6 +235,7 @@ func (h *Handler) ToggleSubscription(c *gin.Context) {
 			if err := tx.Model(&models.User{}).Where("id = ?", subscriberID).UpdateColumn("following_count", gorm.Expr("following_count - ?", 1)).Error; err != nil {
 				return err
 			}
+			isSubscribed = false
 		}
 		return nil
 	})
@@ -247,7 +251,15 @@ func (h *Handler) ToggleSubscription(c *gin.Context) {
 		_ = h.Redis.Del(ctx, fmt.Sprintf("channel:public:%s", channelUser.Username))
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Subscription toggled successfully"})
+	var updatedChannel models.User
+	_ = h.DB.Select("followers_count").First(&updatedChannel, channelID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":         "Subscription toggled successfully",
+		"subscribed":      isSubscribed,
+		"is_subscribed":   isSubscribed,
+		"followers_count": updatedChannel.FollowersCount,
+	})
 }
 
 // GetVideoPlayback uses the Cache-Aside pattern with singleflight to eliminate cache stampedes (thundering herd)

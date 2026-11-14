@@ -633,7 +633,9 @@ export default function VideoPlayer({
 
             {/* Time / Live Badge */}
             <div className="ml-2 flex items-center gap-4 text-sm font-medium">
-              <span className="text-zinc-200">{formatTime(currentTime)} <span className="text-zinc-500 font-normal mx-1">/</span> {formatTime(duration)}</span>
+              {mode !== 'live' && (
+                <span className="text-zinc-200">{formatTime(currentTime)} <span className="text-zinc-500 font-normal mx-1">/</span> {formatTime(duration)}</span>
+              )}
               
               {mode === 'live' && (
                 <div className="flex items-center gap-2">
@@ -687,9 +689,9 @@ export default function VideoPlayer({
                 </div>
               )}
               {mode === 'vod' && wasLive && (
-                <div className="flex items-center gap-1.5 text-xs font-bold tracking-widest uppercase text-zinc-500 px-2 py-1 border border-zinc-700/50 rounded-full bg-zinc-800/50">
-                  <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" />
-                  PREVIOUSLY LIVE
+                <div className="flex items-center gap-1.5 text-xs font-bold tracking-widest uppercase text-zinc-400 px-2.5 py-0.5 border border-zinc-700/60 rounded-full bg-zinc-800/60">
+                  <span className="w-1.5 h-1.5 rounded-full bg-zinc-400" />
+                  STREAM REPLAY
                 </div>
               )}
             </div>

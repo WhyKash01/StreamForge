@@ -143,6 +143,11 @@ func (h *WebhookHandler) HandleLiveWebhook(c *gin.Context) {
 			title = fmt.Sprintf("%s's Live Stream", user.DisplayName)
 		}
 		
+		liveCategory := user.LiveCategory
+		if liveCategory == "" {
+			liveCategory = "Live"
+		}
+
 		var video models.Video
 		err := h.DB.Transaction(func(tx *gorm.DB) error {
 			return tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where(models.Video{URL: streamURL, Type: "Live"}).Assign(models.Video{
@@ -151,7 +156,7 @@ func (h *WebhookHandler) HandleLiveWebhook(c *gin.Context) {
 				Title:        title,
 				Description:  user.LiveDescription,
 				ThumbnailURL: user.LiveThumbnailURL,
-				Category:     user.LiveCategory,
+				Category:     liveCategory,
 				Tags:         user.LiveTags,
 			}).FirstOrCreate(&video).Error
 		})
@@ -268,22 +273,22 @@ func (h *WebhookHandler) HandleVODWebhook(c *gin.Context) {
 						if err := tx.Where("user_id = ? AND (type = 'Live' OR status IN ('Uploading', 'Live', 'Processing'))", userID).
 							Order("created_at desc").First(&liveVideo).Error; err == nil {
 							// Morph this existing Live record into the final VOD!
-							title := liveVideo.Title
-							if !strings.HasSuffix(title, " (VOD)") {
-								title += " (VOD)"
-							}
+							// YouTube-style: Title remains clean (no "(VOD)" tag), type is "VOD" for playback, category is "Live"
+							title := strings.TrimSpace(strings.ReplaceAll(liveVideo.Title, "(VOD)", ""))
 							
 							tx.Model(&liveVideo).Updates(map[string]interface{}{
-								"url":    vodURL,
-								"status": "Uploaded",
-								"title":  title,
-								"type":   "VOD",
+								"url":      vodURL,
+								"status":   "Uploaded",
+								"title":    title,
+								"type":     "VOD",
+								"category": "Live",
 							})
 							
 							liveVideo.Type = "VOD"
 							liveVideo.Status = "Uploaded"
 							liveVideo.URL = vodURL
 							liveVideo.Title = title
+							liveVideo.Category = "Live"
 							video = liveVideo
 							morphedLive = true
 

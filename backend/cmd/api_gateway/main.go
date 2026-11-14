@@ -149,7 +149,7 @@ func main() {
 	r.GET("/api/metadata/videos", metadataHandler.ListVideos)
 	r.GET("/api/metadata/videos/:id/play", metadataHandler.GetVideoPlayback)
 	r.POST("/api/metadata/videos/:id/view", optionalAuthMiddleware, metadataHandler.RecordView)
-	r.GET("/api/metadata/videos/:id/status", authMiddleware, metadataHandler.GetVideoStatus)
+	r.GET("/api/metadata/videos/:id/status", optionalAuthMiddleware, metadataHandler.GetVideoStatus)
 	r.DELETE("/api/metadata/videos/:id", authMiddleware, metadataHandler.DeleteVideo)
 	r.GET("/api/channel/:username", optionalAuthMiddleware, metadataHandler.GetChannel)
 	r.GET("/api/channel/id/:user_id/videos", metadataHandler.GetUserVideos)

@@ -24,8 +24,8 @@ function timeAgo(dateString: string): string {
 
 const CATEGORIES = [
   { id: 'all', label: 'All' },
-  { id: 'live', label: '🔴 Live Now' },
-  { id: 'videos', label: 'VODs' },
+  { id: 'live', label: '🔴 Live' },
+  { id: 'videos', label: 'Videos' },
   { id: 'Gaming', label: '🎮 Gaming' },
   { id: 'Music', label: '🎵 Music' },
   { id: 'Tech', label: '💻 Tech & Dev' },
@@ -83,21 +83,28 @@ export default function Home() {
     );
   }, [dbVideos, searchQ]);
 
-  // Filtered and sorted video list
+  // Filtered and sorted video list (YouTube-style: ended live streams act as VODs and stay in the Live category)
   const displayVideos = useMemo(() => {
     return dbVideos
       // Base filter: only show Live streams or completely processed videos
       .filter(v => v.status === 'Live' || v.status === 'Done' || (v.type === 'Live' && v.status === 'Processing'))
       // Category / Type filter
       .filter(v => {
-        if (activeCategory === 'live') return v.type === 'Live';
-        if (activeCategory === 'videos') return v.type === 'VOD' && v.status === 'Done';
+        const isLiveOrReplay = v.type === 'Live' || v.category?.toLowerCase() === 'live' || v.title.includes('(VOD)');
+        if (activeCategory === 'live') {
+          // Under "Live": Shows active live broadcasts AND past live streams (stream VOD replays)
+          return isLiveOrReplay;
+        }
+        if (activeCategory === 'videos') {
+          // Under "Videos": Shows regular uploaded videos (non-live)
+          return v.type === 'VOD' && v.category?.toLowerCase() !== 'live';
+        }
         if (activeCategory !== 'all') {
           return v.category?.toLowerCase() === activeCategory.toLowerCase();
         }
         return true;
       })
-      // Sort logic: Active 'Live' status on top, then sort by date descending
+      // Sort logic: Active 'Live' status pinned to top, then sort by date descending
       .sort((a, b) => {
         const aIsLive = (a.type === 'Live' && (a.status === 'Live' || a.status === 'Processing')) ? 1 : 0;
         const bIsLive = (b.type === 'Live' && (b.status === 'Live' || b.status === 'Processing')) ? 1 : 0;
@@ -294,6 +301,7 @@ export default function Home() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mt-1">
             {displayVideos.map((video) => {
               const isCurrentlyLive = video.type === 'Live' && (video.status === 'Live' || video.status === 'Processing');
+              const isStreamReplay = !isCurrentlyLive && (video.category?.toLowerCase() === 'live' || video.type === 'Live' || video.title.includes('(VOD)'));
               
               return (
                 <Link 
@@ -317,7 +325,7 @@ export default function Home() {
                         LIVE
                       </div>
                     ) : (
-                      <div className="absolute bottom-2 right-2 bg-black/85 text-white text-[11px] font-bold px-1.5 py-0.5 rounded backdrop-blur-xs">
+                      <div className="absolute bottom-2 right-2 bg-black/85 text-white text-[11px] font-bold px-1.5 py-0.5 rounded backdrop-blur-xs flex items-center gap-1">
                         {video.duration ? `${Math.floor(video.duration / 60)}:${(video.duration % 60).toString().padStart(2, '0')}` : timeAgo(video.CreatedAt)}
                       </div>
                     )}
@@ -335,6 +343,8 @@ export default function Home() {
                             <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
                             Streaming now
                           </span>
+                        ) : isStreamReplay ? (
+                          <span>{video.views || 0} views • Streamed {timeAgo(video.CreatedAt)}</span>
                         ) : (
                           <span>{video.views || 0} views • {timeAgo(video.CreatedAt)}</span>
                         )}

@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSelector } from 'react-redux';
-import { Send, Users, ShieldAlert, ArrowDown, Radio } from 'lucide-react';
+import { Send, Users, ShieldAlert, ArrowDown, Radio, ChevronDown, Smile } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { RootState } from '../store/store';
+
+const QUICK_EMOJIS = ['🔥', '👏', '❤️', '🎮', '🚀', '😂', '👋', '🎉'];
 
 interface ChatMessage {
   type: string;
@@ -19,9 +21,10 @@ interface ChatMessage {
 interface LiveChatProps {
   videoId: number;
   isOwner?: boolean;
+  channelOwnerId?: number;
 }
 
-export default function LiveChat({ videoId, isOwner }: LiveChatProps) {
+export default function LiveChat({ videoId, isOwner, channelOwnerId }: LiveChatProps) {
   const { user, isAuthenticated } = useSelector((state: RootState) => state.auth);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
@@ -29,6 +32,8 @@ export default function LiveChat({ videoId, isOwner }: LiveChatProps) {
   const [isConnected, setIsConnected] = useState(false);
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const [isScrolledUp, setIsScrolledUp] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -56,11 +61,19 @@ export default function LiveChat({ videoId, isOwner }: LiveChatProps) {
     const connectWebSocket = () => {
       if (unmounted) return;
 
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = window.location.host; // Points to Nginx reverse proxy
-      const token = localStorage.getItem('token');
+      let wsUrl: string;
+      const apiUrl = import.meta.env.VITE_API_URL;
+      const token = localStorage.getItem('accessToken') || localStorage.getItem('token') || '';
       const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
-      const wsUrl = `${protocol}//${host}/api/live/${videoId}/ws${tokenParam}`;
+
+      if (apiUrl) {
+        const wsBase = apiUrl.replace(/^http/, 'ws');
+        wsUrl = `${wsBase}/live/${videoId}/ws${tokenParam}`;
+      } else {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.port === '5173' ? 'localhost:8080' : window.location.host;
+        wsUrl = `${protocol}//${host}/api/live/${videoId}/ws${tokenParam}`;
+      }
 
       const ws = new WebSocket(wsUrl);
       socketRef.current = ws;
@@ -98,7 +111,6 @@ export default function LiveChat({ videoId, isOwner }: LiveChatProps) {
       ws.onclose = () => {
         if (unmounted) return;
         setIsConnected(false);
-        // Exponential reconnect
         reconnectTimeoutRef.current = window.setTimeout(connectWebSocket, 3000);
       };
 
@@ -126,6 +138,11 @@ export default function LiveChat({ videoId, isOwner }: LiveChatProps) {
 
     socketRef.current.send(JSON.stringify({ content: trimmed }));
     setInputText('');
+    setShowEmojiPicker(false);
+  };
+
+  const handleAddEmoji = (emoji: string) => {
+    setInputText((prev) => (prev ? `${prev} ${emoji}` : emoji));
   };
 
   const formatTime = (isoString: string) => {
@@ -134,15 +151,33 @@ export default function LiveChat({ videoId, isOwner }: LiveChatProps) {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  if (isCollapsed) {
+    return (
+      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl">
+        <div className="flex items-center gap-2">
+          <Radio className="w-4 h-4 text-rose-500 animate-pulse" />
+          <span className="text-xs font-bold text-zinc-200">Live Chat</span>
+          <span className="text-[11px] text-zinc-500 font-medium">({viewerCount} watching)</span>
+        </div>
+        <button
+          onClick={() => setIsCollapsed(false)}
+          className="text-xs font-bold px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg transition-colors cursor-pointer"
+        >
+          Show Chat
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col h-[560px] bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl">
+    <div className="flex flex-col h-[560px] bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl relative">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-zinc-900/90 border-b border-zinc-800 shrink-0">
         <div className="flex items-center gap-2">
           <Radio className="w-4 h-4 text-rose-500 animate-pulse" />
           <h2 className="text-sm font-bold text-zinc-100 uppercase tracking-wider">Live Chat</h2>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <div className="flex items-center gap-1.5 text-xs text-zinc-400 bg-zinc-800/80 px-2.5 py-1 rounded-full border border-zinc-700/60 font-medium">
             <Users className="w-3.5 h-3.5 text-emerald-400" />
             <span className="text-emerald-400 font-bold">{viewerCount}</span>
@@ -152,6 +187,13 @@ export default function LiveChat({ videoId, isOwner }: LiveChatProps) {
             className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50' : 'bg-amber-500 animate-ping'}`}
             title={isConnected ? 'Connected' : 'Connecting...'}
           />
+          <button
+            onClick={() => setIsCollapsed(true)}
+            className="text-zinc-400 hover:text-white p-1 rounded-md hover:bg-zinc-800 transition-colors cursor-pointer ml-1"
+            title="Hide chat"
+          >
+            <ChevronDown className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
@@ -170,7 +212,7 @@ export default function LiveChat({ videoId, isOwner }: LiveChatProps) {
           </div>
         ) : (
           messages.map((msg, i) => {
-            const isMsgOwner = isOwner && msg.user_id === user?.id;
+            const isStreamer = Boolean((channelOwnerId && msg.user_id === channelOwnerId) || (isOwner && msg.user_id === user?.id));
             const isSelf = user && msg.user_id === user.id;
 
             return (
@@ -190,17 +232,17 @@ export default function LiveChat({ videoId, isOwner }: LiveChatProps) {
                   <div className="flex items-baseline gap-1.5 flex-wrap">
                     <span
                       className={`font-semibold truncate ${
-                        isMsgOwner
+                        isStreamer
                           ? 'text-rose-400 font-bold'
                           : isSelf
-                          ? 'text-indigo-400'
+                          ? 'text-indigo-400 font-medium'
                           : 'text-zinc-300'
                       }`}
                     >
                       {msg.username}
                     </span>
-                    {isMsgOwner && (
-                      <span className="text-[10px] bg-rose-500/20 text-rose-400 border border-rose-500/30 px-1 py-0.2 rounded font-semibold uppercase">
+                    {isStreamer && (
+                      <span className="text-[9px] bg-rose-500/20 text-rose-400 border border-rose-500/30 px-1 py-0.2 rounded font-bold uppercase tracking-wider">
                         Streamer
                       </span>
                     )}
@@ -223,7 +265,7 @@ export default function LiveChat({ videoId, isOwner }: LiveChatProps) {
       {isScrolledUp && (
         <button
           onClick={() => scrollToBottom(true)}
-          className="absolute bottom-16 left-1/2 -translate-x-1/2 bg-zinc-800/95 hover:bg-zinc-700 text-zinc-200 text-xs px-3 py-1.5 rounded-full shadow-lg border border-zinc-700 flex items-center gap-1.5 transition-all animate-bounce z-10"
+          className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-zinc-800/95 hover:bg-zinc-700 text-zinc-200 text-xs px-3 py-1.5 rounded-full shadow-lg border border-zinc-700 flex items-center gap-1.5 transition-all animate-bounce z-10 cursor-pointer"
         >
           <ArrowDown className="w-3.5 h-3.5" />
           <span>New messages below</span>
@@ -238,10 +280,37 @@ export default function LiveChat({ videoId, isOwner }: LiveChatProps) {
         </div>
       )}
 
+      {/* Quick Reactions Bar */}
+      {isAuthenticated && showEmojiPicker && (
+        <div className="px-3 py-2 bg-zinc-950/95 border-t border-zinc-800/80 flex items-center gap-1.5 overflow-x-auto shrink-0 animate-in fade-in">
+          {QUICK_EMOJIS.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              onClick={() => handleAddEmoji(emoji)}
+              className="text-base p-1.5 hover:bg-zinc-800 rounded-lg transition-transform hover:scale-125 cursor-pointer shrink-0"
+              title={`Add ${emoji}`}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Input Form */}
       <div className="p-3 bg-zinc-950/90 border-t border-zinc-800 shrink-0">
         {isAuthenticated ? (
           <form onSubmit={handleSendMessage} className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+              className={`p-2 rounded-xl transition-colors cursor-pointer ${
+                showEmojiPicker ? 'bg-zinc-800 text-rose-400' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
+              }`}
+              title="Quick emojis"
+            >
+              <Smile className="w-4 h-4" />
+            </button>
             <div className="relative flex-1">
               <input
                 type="text"
@@ -258,7 +327,7 @@ export default function LiveChat({ videoId, isOwner }: LiveChatProps) {
             <button
               type="submit"
               disabled={!inputText.trim() || !isConnected}
-              className="p-2.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:hover:bg-rose-600 text-white rounded-xl transition-all shrink-0 cursor-pointer disabled:cursor-not-allowed"
+              className="p-2.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:hover:bg-rose-600 text-white rounded-xl transition-all shrink-0 cursor-pointer disabled:cursor-not-allowed shadow-xs"
               title="Send message"
             >
               <Send className="w-3.5 h-3.5" />

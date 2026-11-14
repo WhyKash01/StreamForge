@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import api from '../api/axios';
-import { Video as VideoIcon, Radio, User as UserIcon } from 'lucide-react';
+import { Video as VideoIcon, Radio, User as UserIcon, Check } from 'lucide-react';
 
 interface ChannelData {
   id: number;
@@ -47,25 +47,32 @@ export default function Channel() {
   }, [username]);
 
   const handleSubscribe = async () => {
-    if (!channel) return;
+    if (!channel || submitting) return;
     setSubmitting(true);
     
     // Optimistic update
     const wasSubscribed = channel.is_subscribed;
+    const nextSubscribed = !wasSubscribed;
     setChannel(prev => prev ? {
       ...prev,
-      is_subscribed: !wasSubscribed,
-      followers_count: prev.followers_count + (wasSubscribed ? -1 : 1)
+      is_subscribed: nextSubscribed,
+      followers_count: Math.max(0, prev.followers_count + (nextSubscribed ? 1 : -1))
     } : prev);
 
     try {
-      await toggleSubscriptionApi(channel.id);
+      const res = await toggleSubscriptionApi(channel.id);
+      const serverSub = res.subscribed ?? res.is_subscribed ?? nextSubscribed;
+      setChannel(prev => prev ? {
+        ...prev,
+        is_subscribed: Boolean(serverSub),
+        followers_count: res.followers_count !== undefined ? res.followers_count : prev.followers_count
+      } : prev);
     } catch (err) {
       // Revert optimistic update on failure
       setChannel(prev => prev ? {
         ...prev,
         is_subscribed: wasSubscribed,
-        followers_count: prev.followers_count + (wasSubscribed ? 1 : -1)
+        followers_count: Math.max(0, prev.followers_count + (wasSubscribed ? 1 : -1))
       } : prev);
       console.error('Failed to toggle subscription', err);
     } finally {
@@ -150,13 +157,29 @@ export default function Channel() {
                 <button 
                   onClick={handleSubscribe}
                   disabled={submitting}
-                  className={`font-semibold px-4 py-2 rounded-full transition-colors shadow-sm disabled:opacity-70 ${
-                    channel.is_subscribed 
-                      ? 'bg-zinc-800 text-white hover:bg-zinc-700' 
-                      : 'bg-white text-black hover:bg-zinc-200'
+                  className={`font-semibold px-4 py-2 rounded-full transition-all duration-200 shadow-sm disabled:opacity-70 flex items-center gap-1.5 cursor-pointer text-sm select-none ${
+                    submitting
+                      ? 'bg-zinc-800 text-zinc-400 border border-zinc-700 opacity-80 cursor-wait'
+                      : channel.is_subscribed 
+                        ? 'bg-zinc-800 hover:bg-rose-950/40 text-zinc-200 hover:text-rose-400 border border-zinc-700 hover:border-rose-500/40 group shadow-xs' 
+                        : 'bg-white text-zinc-950 hover:bg-zinc-200 active:scale-95'
                   }`}
+                  title={channel.is_subscribed ? "Click to unsubscribe" : "Subscribe to channel"}
                 >
-                  {channel.is_subscribed ? 'Subscribed' : 'Subscribe'}
+                  {submitting ? (
+                    <>
+                      <div className="w-3 h-3 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin" />
+                      <span>Updating...</span>
+                    </>
+                  ) : channel.is_subscribed ? (
+                    <>
+                      <Check className="w-4 h-4 text-emerald-400 group-hover:hidden" />
+                      <span className="group-hover:hidden">Subscribed</span>
+                      <span className="hidden group-hover:inline font-semibold">Unsubscribe</span>
+                    </>
+                  ) : (
+                    <span>Subscribe</span>
+                  )}
                 </button>
               )}
             </div>

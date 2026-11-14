@@ -91,6 +91,8 @@ func main() {
 	r.GET("/api/metadata/videos/:id/status", handler.GetVideoStatus)
 	r.DELETE("/api/metadata/videos/:id", handler.DeleteVideo)
 	r.GET("/api/channel/:username", handler.GetChannel)
+	r.GET("/api/channels/subscriptions", handler.GetSubscribedChannels)
+	r.POST("/api/channels/:id/subscribe", handler.ToggleSubscription)
 	r.GET("/api/users/:user_id/videos", handler.GetUserVideos)
 	r.PUT("/api/users/me", handler.UpdateUser)
 	r.PUT("/api/videos/:id", handler.UpdateVideo)

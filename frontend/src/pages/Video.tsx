@@ -97,6 +97,7 @@ export default function Video() {
   
   const [descExpanded, setDescExpanded] = useState(false);
   const [isSubscribed, setIsSubscribed] = useState(false);
+  const [isSubscribing, setIsSubscribing] = useState(false);
 
   // New UI feature states
   const [isTheater, setIsTheater] = useState(false);
@@ -128,12 +129,13 @@ export default function Video() {
     setError('');
     try {
       const res = await api.get(`/metadata/videos/${id}/play`);
+      const cleanTitle = (res.data.title || '').replace(/\s*\(VOD\)$/i, '');
       setPlaybackUrl(res.data.playback_url);
       setWhepUrl(res.data.whep_url || '');
-      setTitle(res.data.title);
+      setTitle(cleanTitle);
       setChannel(res.data.channel || null);
       setMeta({
-        title: res.data.title,
+        title: cleanTitle,
         description: res.data.description || '',
         type: res.data.type || 'VOD',
         status: res.data.status || 'Done',
@@ -184,7 +186,7 @@ export default function Video() {
             setProgress(res.data.progress);
           }
           if (res.data.title) {
-            setTitle(res.data.title);
+            setTitle(res.data.title.replace(/\s*\(VOD\)$/i, ''));
           }
           if (res.data.type && meta && meta.type !== res.data.type) {
             setMeta(prev => prev ? { ...prev, type: res.data.type } : null);
@@ -210,18 +212,22 @@ export default function Video() {
 
   // Check subscription status
   useEffect(() => {
-    if (channel && isAuthenticated) {
+    if (channel?.username && isAuthenticated) {
       api.get(`/channel/${channel.username}`).then(res => {
-        setIsSubscribed(res.data.is_subscribed || false);
+        const sub = res.data.is_subscribed ?? res.data.channel?.is_subscribed ?? false;
+        setIsSubscribed(Boolean(sub));
+        if (res.data.channel?.followers_count !== undefined) {
+          setChannel(prev => prev ? { ...prev, followers_count: res.data.channel.followers_count } : prev);
+        }
       }).catch(() => {});
     }
-  }, [channel, isAuthenticated]);
+  }, [channel?.username, isAuthenticated]);
 
   useEffect(() => {
     if (id && isAuthenticated) {
       getVideoLikeStatusApi(id).then(res => {
-        setVideoLiked(res.liked);
-        setVideoDisliked(res.disliked);
+        setVideoLiked(Boolean(res.liked));
+        setVideoDisliked(Boolean(res.disliked));
       }).catch(e => console.error(e));
     }
   }, [id, isAuthenticated]);
@@ -232,14 +238,33 @@ export default function Video() {
       return;
     }
     if (!id) return;
+
+    // Optimistic UI update
+    const prevLiked = videoLiked;
+    const prevDisliked = videoDisliked;
+    const prevLikesCount = likesCount;
+    const prevDislikesCount = dislikesCount;
+
+    const nextLiked = !prevLiked;
+    setVideoLiked(nextLiked);
+    setLikesCount(prev => Math.max(0, prev + (nextLiked ? 1 : -1)));
+    if (nextLiked && prevDisliked) {
+      setVideoDisliked(false);
+      setDislikesCount(prev => Math.max(0, prev - 1));
+    }
+
     try {
       const res = await toggleLikeVideoApi(id);
-      setVideoLiked(res.liked);
-      setVideoDisliked(res.disliked);
+      setVideoLiked(Boolean(res.liked));
+      setVideoDisliked(Boolean(res.disliked));
       setLikesCount(res.likes_count);
       setDislikesCount(res.dislikes_count);
     } catch (e) {
       console.error("Failed to like video", e);
+      setVideoLiked(prevLiked);
+      setVideoDisliked(prevDisliked);
+      setLikesCount(prevLikesCount);
+      setDislikesCount(prevDislikesCount);
       showToast("Failed to update like status", "error");
     }
   };
@@ -250,14 +275,33 @@ export default function Video() {
       return;
     }
     if (!id) return;
+
+    // Optimistic UI update
+    const prevLiked = videoLiked;
+    const prevDisliked = videoDisliked;
+    const prevLikesCount = likesCount;
+    const prevDislikesCount = dislikesCount;
+
+    const nextDisliked = !prevDisliked;
+    setVideoDisliked(nextDisliked);
+    setDislikesCount(prev => Math.max(0, prev + (nextDisliked ? 1 : -1)));
+    if (nextDisliked && prevLiked) {
+      setVideoLiked(false);
+      setLikesCount(prev => Math.max(0, prev - 1));
+    }
+
     try {
       const res = await toggleDislikeVideoApi(id);
-      setVideoLiked(res.liked);
-      setVideoDisliked(res.disliked);
+      setVideoLiked(Boolean(res.liked));
+      setVideoDisliked(Boolean(res.disliked));
       setLikesCount(res.likes_count);
       setDislikesCount(res.dislikes_count);
     } catch (e) {
       console.error("Failed to dislike video", e);
+      setVideoLiked(prevLiked);
+      setVideoDisliked(prevDisliked);
+      setLikesCount(prevLikesCount);
+      setDislikesCount(prevDislikesCount);
       showToast("Failed to update dislike status", "error");
     }
   };
@@ -267,15 +311,38 @@ export default function Video() {
       showToast("Please sign in to subscribe.", "info");
       return;
     }
-    if (!channel) return;
+    if (!channel || isSubscribing) return;
+    setIsSubscribing(true);
+
+    const nextSub = !isSubscribed;
+    setIsSubscribed(nextSub);
+    setChannel(prev => prev ? {
+      ...prev,
+      followers_count: Math.max(0, (prev.followers_count || 0) + (nextSub ? 1 : -1))
+    } : prev);
+
     try {
       const res = await toggleSubscriptionApi(channel.id);
-      setIsSubscribed(res.subscribed);
-      setChannel(prev => prev ? { ...prev, followers_count: (prev.followers_count || 0) + (res.subscribed ? 1 : -1) } : prev);
-      showToast(res.subscribed ? `Subscribed to ${channel.display_name || channel.username}` : `Unsubscribed from ${channel.display_name || channel.username}`, 'success');
-    } catch (e) {
+      const serverSub = res.subscribed ?? res.is_subscribed ?? nextSub;
+      setIsSubscribed(Boolean(serverSub));
+      if (res.followers_count !== undefined) {
+        setChannel(prev => prev ? { ...prev, followers_count: res.followers_count } : prev);
+      }
+      showToast(
+        serverSub ? `Subscribed to ${channel.display_name || channel.username}` : `Unsubscribed from ${channel.display_name || channel.username}`,
+        'success'
+      );
+    } catch (e: any) {
       console.error("Failed to subscribe", e);
-      showToast("Failed to update subscription", "error");
+      // Revert optimistic update
+      setIsSubscribed(!nextSub);
+      setChannel(prev => prev ? {
+        ...prev,
+        followers_count: Math.max(0, (prev.followers_count || 0) + (nextSub ? -1 : 1))
+      } : prev);
+      showToast(e.response?.data?.error || "Failed to update subscription", "error");
+    } finally {
+      setIsSubscribing(false);
     }
   };
 
@@ -323,6 +390,7 @@ export default function Video() {
   };
 
   const isLive = meta?.type === 'Live' && videoStatus !== 'Done' && videoStatus !== 'Failed';
+  const isStreamVOD = (meta?.category?.toLowerCase() === 'live' || meta?.type === 'Live' || title.includes('(VOD)')) && videoStatus === 'Done';
   const isOwner = currentUser && channel && currentUser.id === channel.id;
 
   // Render player block
@@ -376,7 +444,7 @@ export default function Video() {
           src={playbackUrl}
           whepUrl={whepUrl}
           mode={(meta?.type === 'Live' && videoStatus !== 'Done') ? 'live' : 'vod'}
-          wasLive={meta?.type === 'Live' || title.includes('(VOD)')}
+          wasLive={isStreamVOD}
           isTheater={isTheater}
           onToggleTheater={() => setIsTheater(!isTheater)}
           onEnded={() => {
@@ -435,19 +503,36 @@ export default function Video() {
                         {channel.display_name || channel.username}
                       </Link>
                       <span className="text-xs text-zinc-400">
-                        {channel.followers_count ? formatCount(channel.followers_count) : '0'} subscribers
+                        {channel.followers_count !== undefined ? formatCount(channel.followers_count) : '0'} {(channel.followers_count === 1) ? 'subscriber' : 'subscribers'}
                       </span>
                     </div>
                     {!isOwner && (
                       <button
                         onClick={handleSubscribe}
-                        className={`ml-3 px-4 py-2 text-xs font-bold rounded-full transition-all duration-200 cursor-pointer ${
-                          isSubscribed 
-                            ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700' 
-                            : 'bg-white text-zinc-950 hover:bg-zinc-200 shadow-md'
+                        disabled={isSubscribing}
+                        className={`ml-3 px-4 py-2 text-xs font-bold rounded-full transition-all duration-200 cursor-pointer flex items-center gap-1.5 select-none ${
+                          isSubscribing
+                            ? 'bg-zinc-800 text-zinc-400 border border-zinc-700 opacity-80 cursor-wait'
+                            : isSubscribed
+                              ? 'bg-zinc-800 hover:bg-rose-950/40 text-zinc-200 hover:text-rose-400 border border-zinc-700 hover:border-rose-500/40 group shadow-xs'
+                              : 'bg-white text-zinc-950 hover:bg-zinc-200 shadow-md active:scale-95'
                         }`}
+                        title={isSubscribed ? "Click to unsubscribe" : "Subscribe to channel"}
                       >
-                        {isSubscribed ? 'Subscribed' : 'Subscribe'}
+                        {isSubscribing ? (
+                          <>
+                            <div className="w-3 h-3 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin" />
+                            <span>Updating...</span>
+                          </>
+                        ) : isSubscribed ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-400 group-hover:hidden" />
+                            <span className="group-hover:hidden">Subscribed</span>
+                            <span className="hidden group-hover:inline font-semibold">Unsubscribe</span>
+                          </>
+                        ) : (
+                          <span>Subscribe</span>
+                        )}
                       </button>
                     )}
                   </>
@@ -458,22 +543,30 @@ export default function Video() {
               <div className="flex items-center gap-2">
                 
                 {/* Like / Dislike Pill */}
-                <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-full overflow-hidden">
+                <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-full overflow-hidden shadow-xs">
                   <button 
                     onClick={handleLikeVideo}
-                    className={`flex items-center gap-2 px-3.5 py-1.5 transition-colors cursor-pointer ${videoLiked ? 'bg-rose-500/15 text-rose-400' : 'hover:bg-zinc-800 text-zinc-300'}`}
-                    title="I like this"
+                    className={`flex items-center gap-2 px-3.5 py-1.5 transition-all cursor-pointer active:scale-95 ${
+                      videoLiked 
+                        ? 'bg-rose-500/15 text-rose-400 font-bold' 
+                        : 'hover:bg-zinc-800 text-zinc-300'
+                    }`}
+                    title={videoLiked ? "Unlike" : "I like this"}
                   >
-                    <ThumbsUp className={`w-4 h-4 ${videoLiked ? 'fill-current' : ''}`} />
-                    <span className="text-xs font-semibold">{likesCount > 0 ? formatCount(likesCount) : ''}</span>
+                    <ThumbsUp className={`w-4 h-4 transition-transform ${videoLiked ? 'fill-current scale-110 text-rose-400' : ''}`} />
+                    <span className="text-xs font-semibold">{likesCount > 0 ? formatCount(likesCount) : 'Like'}</span>
                   </button>
                   <div className="w-px h-5 bg-zinc-800" />
                   <button 
                     onClick={handleDislikeVideo}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 transition-colors cursor-pointer ${videoDisliked ? 'bg-rose-500/15 text-rose-400' : 'hover:bg-zinc-800 text-zinc-300'}`}
-                    title="I dislike this"
+                    className={`flex items-center gap-1.5 px-3 py-1.5 transition-all cursor-pointer active:scale-95 ${
+                      videoDisliked 
+                        ? 'bg-rose-500/15 text-rose-400 font-bold' 
+                        : 'hover:bg-zinc-800 text-zinc-300'
+                    }`}
+                    title={videoDisliked ? "Remove dislike" : "I dislike this"}
                   >
-                    <ThumbsDown className={`w-4 h-4 ${videoDisliked ? 'fill-current' : ''}`} />
+                    <ThumbsDown className={`w-4 h-4 transition-transform ${videoDisliked ? 'fill-current scale-110 text-rose-400' : ''}`} />
                     {dislikesCount > 0 && <span className="text-xs font-semibold">{formatCount(dislikesCount)}</span>}
                   </button>
                 </div>
@@ -512,7 +605,11 @@ export default function Video() {
                   {formatViews(viewsCount)}
                 </span>
                 <span className="text-zinc-600">•</span>
-                <span>{formatDate(meta?.created_at || '')}</span>
+                <span>
+                  {isStreamVOD 
+                    ? `Streamed live on ${formatDate(meta?.created_at || '')}`
+                    : formatDate(meta?.created_at || '')}
+                </span>
                 {meta?.category && (
                   <>
                     <span className="text-zinc-600">•</span>
@@ -562,7 +659,11 @@ export default function Video() {
           {isLive && id ? (
             /* Live Chat Panel */
             <div className="sticky top-20">
-              <LiveChat videoId={Number(id)} isOwner={Boolean(isOwner)} />
+              <LiveChat 
+                videoId={Number(id)} 
+                isOwner={Boolean(isOwner)} 
+                channelOwnerId={channel?.id} 
+              />
             </div>
           ) : (
             /* Up Next / Recommended Videos List for VOD */
